@@ -14,7 +14,7 @@ module.exports = {
     {
       name: 'autodialer-api',
       cwd: path.join(__dirname, '..'),
-      script: 'dist/src/main.js',
+      script: 'start-api.js',
       instances: 1,
       exec_mode: 'fork',
       env: {
