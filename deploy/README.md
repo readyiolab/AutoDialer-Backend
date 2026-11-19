@@ -37,8 +37,9 @@ ss -ltnp | grep 3010 || echo "port 3010 free"
 ```
 
 - API on `3010` (or `3011` if taken — update Nginx upstream only).
-- `REDIS_URL=redis://127.0.0.1:6379/2` (DB index 2).
-- Do not restart Redis.
+- Prefer **Upstash** via `REDIS_HOST` / `REDIS_PASSWORD` / `REDIS_TLS=true` (see `deploy/env.production.sample`).
+- Or `REDIS_URL=rediss://default:PASSWORD@HOST:6379`.
+- Do not restart the box Redis service for Lendigo.
 
 ## 1. RDS
 

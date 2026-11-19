@@ -4,6 +4,7 @@ import IORedis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 import { ImportProcessor } from './import.processor';
 import { NotificationProcessor } from './notification.processor';
+import { resolveRedisConnection } from '../common/utils/redis-connection';
 
 export const LEAD_IMPORT_QUEUE = 'lead-import';
 export const NOTIFICATION_QUEUE = 'notifications';
@@ -27,14 +28,19 @@ export class QueueModule implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
-    const redisUrl = process.env.REDIS_URL;
-    if (!redisUrl) {
-      this.logger.warn('REDIS_URL not set — background jobs run inline');
+    const resolved = resolveRedisConnection();
+    if (!resolved) {
+      this.logger.warn(
+        'Redis not set (REDIS_URL or REDIS_HOST) — background jobs run inline',
+      );
       return;
     }
 
     try {
-      this.connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+      this.connection =
+        resolved.kind === 'url'
+          ? new IORedis(resolved.url, resolved.options)
+          : new IORedis(resolved.options);
       QueueModule.importQueue = new Queue(LEAD_IMPORT_QUEUE, { connection: this.connection });
       QueueModule.notificationQueue = new Queue(NOTIFICATION_QUEUE, {
         connection: this.connection,

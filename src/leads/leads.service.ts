@@ -1179,7 +1179,7 @@ export class LeadsService {
     if (!queued.queued) {
       if (requireRedis) {
         throw new BadRequestException(
-          'REDIS_URL is required for large/production imports. Configure Redis and retry.',
+          'Redis is required for large/production imports. Set REDIS_URL or REDIS_HOST/REDIS_PASSWORD (Upstash) and retry.',
         );
       }
       const result = await this.importProcessor.commitImport(importHistoryId, companyId);
