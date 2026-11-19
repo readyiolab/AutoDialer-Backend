@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { LeadStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { clampListLimit, clampPage, clampPageSize } from '../common/utils/pagination';
+import { TtlLru } from '../common/utils/ttl-lru';
 import {
   BUCKET_STATUSES,
   emptyBucketCounts,
@@ -13,21 +14,23 @@ import {
 
 @Injectable()
 export class ReportsService {
+  private readonly dashboardCache = new TtlLru<any>(200, 30_000);
+
   constructor(private prisma: PrismaService) {}
 
   async getDashboardSummary(companyId: string) {
+    const cached = this.dashboardCache.get(companyId);
+    if (cached) return cached;
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+    const tomorrow = new Date(today.getTime() + 86400000);
 
+    // Collapse status counts via groupBy instead of many lead.count calls
     const [
-      totalLeads,
+      leadStatusGroups,
       unassignedLeads,
-      assignedLeads,
-      pendingLeads,
-      contactedLeads,
-      interestedLeadCount,
-      convertedLeads,
       callsAttempted,
       connectedCalls,
       interestedLeads,
@@ -44,15 +47,12 @@ export class ReportsService {
       smsSent,
       followUpsDue,
     ] = await Promise.all([
-      this.prisma.lead.count({ where: { companyId } }),
-      this.prisma.lead.count({ where: { companyId, assignedToId: null } }),
-      this.prisma.lead.count({ where: { companyId, assignedToId: { not: null } } }),
-      this.prisma.lead.count({
-        where: { companyId, status: { in: ['PENDING', 'NEW', 'ASSIGNED', 'NOT_CONTACTED'] } },
+      this.prisma.lead.groupBy({
+        by: ['status'],
+        where: { companyId },
+        _count: { _all: true },
       }),
-      this.prisma.lead.count({ where: { companyId, status: 'CONTACTED' } }),
-      this.prisma.lead.count({ where: { companyId, status: 'INTERESTED' } }),
-      this.prisma.lead.count({ where: { companyId, status: 'CONVERTED' } }),
+      this.prisma.lead.count({ where: { companyId, assignedToId: null } }),
       this.prisma.callRecord.count({ where: { companyId } }),
       this.prisma.callRecord.count({ where: { companyId, category: 'CONNECTED' } }),
       this.prisma.callRecord.count({ where: { companyId, disposition: 'INTERESTED' } }),
@@ -97,10 +97,22 @@ export class ReportsService {
         where: {
           companyId,
           status: 'PENDING',
-          scheduledDate: { gte: today, lt: new Date(today.getTime() + 86400000) },
+          scheduledDate: { gte: today, lt: tomorrow },
         },
       }),
     ]);
+
+    const statusCount = (names: string[]) =>
+      leadStatusGroups
+        .filter((g) => names.includes(String(g.status)))
+        .reduce((acc, g) => acc + g._count._all, 0);
+
+    const totalLeads = leadStatusGroups.reduce((acc, g) => acc + g._count._all, 0);
+    const assignedLeads = Math.max(0, totalLeads - unassignedLeads);
+    const pendingLeads = statusCount(['PENDING', 'NEW', 'ASSIGNED', 'NOT_CONTACTED']);
+    const contactedLeads = statusCount(['CONTACTED']);
+    const interestedLeadCount = statusCount(['INTERESTED']);
+    const convertedLeads = statusCount(['CONVERTED']);
 
     const avgDurationSeconds = Math.round(todayDurations._avg.duration || 0);
     const avgMinutes = Math.floor(avgDurationSeconds / 60);
@@ -112,7 +124,7 @@ export class ReportsService {
     const conversionPercentage =
       totalLeads > 0 ? Number(((convertedLeads / totalLeads) * 100).toFixed(1)) : 0;
 
-    return {
+    const summary = {
       totalLeads,
       unassignedLeads,
       assignedLeads,
@@ -141,6 +153,8 @@ export class ReportsService {
       whatsAppSent,
       smsSent,
     };
+    this.dashboardCache.set(companyId, summary);
+    return summary;
   }
 
   private buildCallWhere(params: {
@@ -176,7 +190,7 @@ export class ReportsService {
       connectedCalls,
       dispositionGroups,
       durationAgg,
-      uniqueCustomers,
+      uniqueLeadGroups,
       totalLeadsAllocated,
       pendingLeads,
     ] = await Promise.all([
@@ -192,10 +206,11 @@ export class ReportsService {
         _sum: { duration: true },
         _avg: { duration: true },
       }),
-      this.prisma.callRecord.findMany({
+      // COUNT(DISTINCT leadId) without loading every leadId into memory as full rows
+      this.prisma.callRecord.groupBy({
+        by: ['leadId'],
         where,
-        distinct: ['leadId'],
-        select: { leadId: true },
+        _count: { _all: true },
       }),
       this.prisma.lead.count({ where: { companyId } }),
       this.prisma.lead.count({ where: { companyId, status: 'NEW' } }),
@@ -211,7 +226,7 @@ export class ReportsService {
     return {
       totalLeadsAllocated,
       totalCallsAttempted: totalCalls,
-      uniqueCustomersCalled: uniqueCustomers.length,
+      uniqueCustomersCalled: uniqueLeadGroups.length,
       connectedCalls,
       notPicked: dispositionCount('NOT_PICKED'),
       busy: dispositionCount('BUSY'),
@@ -364,16 +379,32 @@ export class ReportsService {
 
   async getEmployeeProductivityMIS(
     companyId: string,
-    opts: { campaignId?: string } = {},
+    opts: { campaignId?: string; dateFrom?: string; dateTo?: string } = {},
   ) {
     const campaignId = opts.campaignId?.trim() || undefined;
+    // Default last 7 days — never scan all-history
+    const dateTo = opts.dateTo ? new Date(opts.dateTo) : new Date();
+    const dateFrom = opts.dateFrom
+      ? new Date(opts.dateFrom)
+      : new Date(dateTo.getTime() - 7 * 86400000);
+
     const users = await this.resolveTelecallers(companyId, { campaignId });
     if (users.length === 0) {
-      return { employees: [], summary: null, campaignId: campaignId || null };
+      return {
+        employees: [],
+        summary: null,
+        campaignId: campaignId || null,
+        dateFrom: dateFrom.toISOString(),
+        dateTo: dateTo.toISOString(),
+      };
     }
 
     const userIds = users.map((u) => u.id);
-    const callWhere: any = { companyId, userId: { in: userIds } };
+    const callWhere: any = {
+      companyId,
+      userId: { in: userIds },
+      createdAt: { gte: dateFrom, lte: dateTo },
+    };
     const leadWhere: any = { companyId, assignedToId: { in: userIds } };
     if (campaignId) {
       callWhere.campaignId = campaignId;
@@ -758,49 +789,69 @@ export class ReportsService {
       orderBy: { name: 'asc' },
     });
 
-    const result = [];
+    const allUserIds = branches.flatMap((b) => b.users.map((u) => u.id));
+    const userToBranch = new Map<string, string>();
     for (const b of branches) {
-      const userIds = b.users.map((u) => u.id);
-      if (userIds.length === 0) {
-        result.push({
-          id: b.id,
-          name: b.name,
-          state: b.state || '-',
-          city: b.city || '-',
-          telecallersCount: 0,
-          totalCalls: 0,
-          connectedCalls: 0,
-          interestedLeads: 0,
-          connectionRate: '0%',
-        });
-        continue;
-      }
+      for (const u of b.users) userToBranch.set(u.id, b.id);
+    }
 
-      const [totalCalls, connected, interested] = await Promise.all([
-        this.prisma.callRecord.count({ where: { companyId, userId: { in: userIds } } }),
-        this.prisma.callRecord.count({
-          where: { companyId, userId: { in: userIds }, category: 'CONNECTED' },
+    const emptyStats = () => ({ totalCalls: 0, connected: 0, interested: 0 });
+    const byBranch = new Map<string, { totalCalls: number; connected: number; interested: number }>();
+    for (const b of branches) byBranch.set(b.id, emptyStats());
+
+    if (allUserIds.length) {
+      const [byUser, byUserConnected, byUserInterested] = await Promise.all([
+        this.prisma.callRecord.groupBy({
+          by: ['userId'],
+          where: { companyId, userId: { in: allUserIds } },
+          _count: { _all: true },
         }),
-        this.prisma.callRecord.count({
-          where: { companyId, userId: { in: userIds }, disposition: 'INTERESTED' },
+        this.prisma.callRecord.groupBy({
+          by: ['userId'],
+          where: { companyId, userId: { in: allUserIds }, category: 'CONNECTED' },
+          _count: { _all: true },
+        }),
+        this.prisma.callRecord.groupBy({
+          by: ['userId'],
+          where: { companyId, userId: { in: allUserIds }, disposition: 'INTERESTED' },
+          _count: { _all: true },
         }),
       ]);
 
-      result.push({
+      const apply = (
+        rows: { userId: string; _count: { _all: number } }[],
+        field: 'totalCalls' | 'connected' | 'interested',
+      ) => {
+        for (const row of rows) {
+          const branchId = userToBranch.get(row.userId);
+          if (!branchId) continue;
+          const stats = byBranch.get(branchId) || emptyStats();
+          stats[field] += row._count._all;
+          byBranch.set(branchId, stats);
+        }
+      };
+      apply(byUser, 'totalCalls');
+      apply(byUserConnected, 'connected');
+      apply(byUserInterested, 'interested');
+    }
+
+    return branches.map((b) => {
+      const stats = byBranch.get(b.id) || emptyStats();
+      return {
         id: b.id,
         name: b.name,
         state: b.state || '-',
         city: b.city || '-',
         telecallersCount: b._count.users,
-        totalCalls,
-        connectedCalls: connected,
-        interestedLeads: interested,
+        totalCalls: stats.totalCalls,
+        connectedCalls: stats.connected,
+        interestedLeads: stats.interested,
         connectionRate:
-          totalCalls > 0 ? ((connected / totalCalls) * 100).toFixed(1) + '%' : '0%',
-      });
-    }
-
-    return result;
+          stats.totalCalls > 0
+            ? ((stats.connected / stats.totalCalls) * 100).toFixed(1) + '%'
+            : '0%',
+      };
+    });
   }
 
   async getCommunicationMIS(companyId: string) {

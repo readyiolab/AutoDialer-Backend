@@ -14,9 +14,9 @@ Domains:
 
 | Role | Path / name |
 |------|-------------|
-| Code (clone Backend here) | `/opt/autodialer` |
+| Code (live Backend) | `/var/www/AutoDialer` |
 | Static site | `/var/www/autodialer` |
-| Uploads | `/var/lib/autodialer/uploads` |
+| Uploads | `/var/lib/autodialer/uploads` (or under AutoDialer) |
 | PM2 | `autodialer-api` |
 | Nginx sites | `autodialer`, `autodialerapi` |
 | RDS database | `autodialer` only |
@@ -104,10 +104,27 @@ npm ci && npm run build
 sudo rsync -a --delete dist/ /var/www/autodialer/
 ```
 
+## Update: backend performance overhaul
+
+Live API path on this EC2 is **`/var/www/AutoDialer`** (not `/opt/autodialer`).
+
+```bash
+cd /var/www/AutoDialer
+# Prefer git pull if .git exists; otherwise re-clone Backend over a backup
+git pull || true
+npm ci
+npx prisma migrate deploy
+npm run build
+pm2 restart autodialer-api
+curl -sS https://autodialerapi.lendigomicrocare.com/api/health
+```
+
+Ensure `DATABASE_URL` includes `connection_limit=10` (or similar). Redis uses short connect timeouts; jobs fall back inline if Redis is slow.
+
 ## Update: faster mobile today/lists
 
 ```bash
-cd /opt/autodialer   # or your API clone path
+cd /var/www/AutoDialer
 git pull
 npm ci
 npx prisma migrate deploy

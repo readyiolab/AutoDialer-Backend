@@ -186,26 +186,43 @@ export class DevicesService {
     return this.assertAndBindAndroidDevice(userId, companyId, meta);
   }
 
-  async listForCompany(companyId: string, userId?: string) {
-    return this.prisma.userDevice.findMany({
-      where: {
-        companyId,
-        ...(userId ? { userId } : {}),
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-            employeeId: true,
-            status: true,
+  async listForCompany(
+    companyId: string,
+    userId?: string,
+    pagination: { page?: number; pageSize?: number } = {},
+  ) {
+    const { clampPage, clampPageSize } = await import('../common/utils/pagination');
+    const page = clampPage(pagination.page);
+    const pageSize = clampPageSize(pagination.pageSize);
+    const where = {
+      companyId,
+      ...(userId ? { userId } : {}),
+    };
+    const [data, total] = await Promise.all([
+      this.prisma.userDevice.findMany({
+        where,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+              employeeId: true,
+              status: true,
+            },
           },
         },
-      },
-      orderBy: { lastActiveAt: 'desc' },
-    });
+        orderBy: { lastActiveAt: 'desc' },
+      }),
+      this.prisma.userDevice.count({ where }),
+    ]);
+    return {
+      data,
+      meta: { total, page, pageSize, totalPages: Math.ceil(total / pageSize) },
+    };
   }
 
   async getOne(id: string, companyId: string) {

@@ -376,6 +376,7 @@ model User {
 
   @@unique([employeeId, companyId])
   @@index([companyId, status])
+  @@index([companyId, roleId, status])
   @@map("users")
 }
 
@@ -461,6 +462,9 @@ model Lead {
   @@index([assignedToId, status])
   @@index([assignedToId, companyId, status])
   @@index([assignedToId, companyId, campaignId])
+  @@index([companyId, assignedToId, updatedAt])
+  @@index([companyId, assignedToId, lastContactedAt])
+  @@index([companyId, assignedToId, nextFollowUpAt])
   @@index([campaignId, status])
   @@index([companyId, createdAt])
   @@index([companyId, needsReview])
@@ -650,6 +654,8 @@ model CallRecord {
   @@index([companyId, createdAt])
   @@index([companyId, userId, campaignId])
   @@index([companyId, userId, category, createdAt])
+  @@index([companyId, campaignId, createdAt])
+  @@index([companyId, disposition, createdAt])
   @@map("call_records")
 }
 
@@ -868,6 +874,7 @@ model SessionLog {
 
   @@index([userId, isActive])
   @@index([token])
+  @@index([isActive, loginAt])
   @@map("session_logs")
 }
 

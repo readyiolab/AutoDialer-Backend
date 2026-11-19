@@ -5,6 +5,11 @@ import { Request } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveJwtSecret } from '../common/utils/jwt-secret';
 import { hashToken } from '../common/utils/token-hash';
+import {
+  CachedAuthUser,
+  deviceTouchThrottle,
+  sessionAuthCache,
+} from './session-cache';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -17,7 +22,32 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(req: Request, payload: any) {
+  async validate(req: Request, payload: any): Promise<CachedAuthUser> {
+    const rawToken = ExtractJwt.fromAuthHeaderAsBearerToken()(req);
+    const tokenHash = rawToken ? hashToken(rawToken) : '';
+    if (tokenHash) {
+      const cached = sessionAuthCache.get(tokenHash);
+      if (cached) {
+        const clientType =
+          payload.clientType || String(req.headers['x-client-type'] || '').toLowerCase() || cached.clientType;
+        if (clientType === 'android') {
+          const headerDevice = String(req.headers['x-device-id'] || '').trim();
+          const claimDevice = payload.deviceId ? String(payload.deviceId) : '';
+          const deviceId = headerDevice || claimDevice;
+          // Re-validate device only when identity changes; otherwise throttle touch only
+          if (!deviceId) {
+            throw new ForbiddenException('Missing device identity');
+          }
+          if (cached.deviceId && cached.deviceId !== deviceId) {
+            await this.assertAndroidDevice(req, payload, cached.userId);
+          } else {
+            await this.touchAndroidDeviceThrottled(cached.userId, deviceId);
+          }
+        }
+        return { ...cached, clientType, deviceId: payload.deviceId || cached.deviceId };
+      }
+    }
+
     const user = await this.prisma.user.findUnique({
       where: { id: payload.userId },
       select: {
@@ -51,43 +81,30 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Company account is suspended or inactive');
     }
 
-    const rawToken = ExtractJwt.fromAuthHeaderAsBearerToken()(req);
-    if (rawToken) {
-      const tokenHash = hashToken(rawToken);
+    if (tokenHash) {
       const session = await this.prisma.sessionLog.findFirst({
         where: {
           userId: user.id,
           token: tokenHash,
           isActive: true,
         },
+        select: { id: true },
       });
       if (!session) {
         throw new UnauthorizedException('Session is inactive or revoked');
       }
     }
 
-    const clientType = payload.clientType || String(req.headers['x-client-type'] || '').toLowerCase();
+    const clientType =
+      payload.clientType || String(req.headers['x-client-type'] || '').toLowerCase() || 'web';
+    let resolvedDeviceId: string | null = payload.deviceId || null;
     if (clientType === 'android') {
       const headerDevice = String(req.headers['x-device-id'] || '').trim();
-      const claimDevice = payload.deviceId ? String(payload.deviceId) : '';
-      const deviceId = headerDevice || claimDevice;
-      if (!deviceId) {
-        throw new ForbiddenException('Missing device identity');
-      }
-      const device = await this.prisma.userDevice.findFirst({
-        where: { userId: user.id, deviceId, status: 'ACTIVE' },
-      });
-      if (!device) {
-        throw new ForbiddenException('Device is not authorized for this account');
-      }
-      // best-effort last-active touch (non-blocking)
-      void this.prisma.userDevice.update({
-        where: { id: device.id },
-        data: { lastActiveAt: new Date() },
-      }).catch(() => undefined);
+      resolvedDeviceId = headerDevice || (payload.deviceId ? String(payload.deviceId) : null);
+      await this.assertAndroidDevice(req, payload, user.id);
     }
 
-    return {
+    const authUser: CachedAuthUser = {
       id: user.id,
       userId: user.id,
       companyId: user.companyId,
@@ -99,8 +116,55 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       mustChangePassword: user.mustChangePassword,
       permissions: user.role.permissions,
       clientType: clientType || payload.clientType || 'web',
-      deviceId: payload.deviceId || null,
+      deviceId: resolvedDeviceId,
       sessionId: payload.sessionId || null,
     };
+
+    if (tokenHash) {
+      sessionAuthCache.set(tokenHash, authUser);
+    }
+
+    return authUser;
+  }
+
+  private async assertAndroidDevice(req: Request, payload: any, userId: string) {
+    const headerDevice = String(req.headers['x-device-id'] || '').trim();
+    const claimDevice = payload.deviceId ? String(payload.deviceId) : '';
+    const deviceId = headerDevice || claimDevice;
+    if (!deviceId) {
+      throw new ForbiddenException('Missing device identity');
+    }
+    const device = await this.prisma.userDevice.findFirst({
+      where: { userId, deviceId, status: 'ACTIVE' },
+      select: { id: true },
+    });
+    if (!device) {
+      throw new ForbiddenException('Device is not authorized for this account');
+    }
+    await this.touchAndroidDeviceThrottled(userId, deviceId, device.id);
+  }
+
+  private async touchAndroidDeviceThrottled(
+    userId: string,
+    deviceId: string,
+    knownDeviceRowId?: string,
+  ) {
+    if (deviceTouchThrottle.get(deviceId)) return;
+    deviceTouchThrottle.set(deviceId, true);
+    let id = knownDeviceRowId;
+    if (!id) {
+      const device = await this.prisma.userDevice.findFirst({
+        where: { userId, deviceId, status: 'ACTIVE' },
+        select: { id: true },
+      });
+      id = device?.id;
+    }
+    if (!id) return;
+    void this.prisma.userDevice
+      .update({
+        where: { id },
+        data: { lastActiveAt: new Date() },
+      })
+      .catch(() => undefined);
   }
 }

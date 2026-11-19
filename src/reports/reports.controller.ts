@@ -48,6 +48,8 @@ export class ReportsController {
   getEmployeeProductivityMIS(@Query() query: any, @CurrentUser() user: any) {
     return this.reportsService.getEmployeeProductivityMIS(user.companyId, {
       campaignId: query.campaignId,
+      dateFrom: query.dateFrom,
+      dateTo: query.dateTo,
     });
   }
 
@@ -56,6 +58,8 @@ export class ReportsController {
   getEmployeeAlias(@Query() query: any, @CurrentUser() user: any) {
     return this.reportsService.getEmployeeProductivityMIS(user.companyId, {
       campaignId: query.campaignId,
+      dateFrom: query.dateFrom,
+      dateTo: query.dateTo,
     });
   }
 

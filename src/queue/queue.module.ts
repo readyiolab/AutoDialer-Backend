@@ -41,6 +41,13 @@ export class QueueModule implements OnModuleInit, OnModuleDestroy {
         resolved.kind === 'url'
           ? new IORedis(resolved.url, resolved.options)
           : new IORedis(resolved.options);
+      // lazyConnect: true — connect explicitly with a short timeout
+      await Promise.race([
+        this.connection.connect(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Redis connect timeout')), 4_000),
+        ),
+      ]);
       QueueModule.importQueue = new Queue(LEAD_IMPORT_QUEUE, { connection: this.connection });
       QueueModule.notificationQueue = new Queue(NOTIFICATION_QUEUE, {
         connection: this.connection,
@@ -89,12 +96,21 @@ export class QueueModule implements OnModuleInit, OnModuleDestroy {
 
   static async enqueueNotification(data: Record<string, unknown>, delayMs = 0) {
     if (QueueModule.notificationQueue) {
-      await QueueModule.notificationQueue.add('notify', data, {
-        delay: delayMs,
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 1000 },
-      });
-      return { queued: true };
+      try {
+        await Promise.race([
+          QueueModule.notificationQueue.add('notify', data, {
+            delay: delayMs,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 1000 },
+          }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('notification enqueue timeout')), 2_000),
+          ),
+        ]);
+        return { queued: true };
+      } catch {
+        return { queued: false };
+      }
     }
     return { queued: false };
   }

@@ -495,15 +495,20 @@ export class AuthService {
   async logout(userId: string, rawToken?: string) {
     const now = new Date();
     if (rawToken) {
+      const tokenHash = hashToken(rawToken);
       await this.prisma.sessionLog.updateMany({
-        where: { userId, token: hashToken(rawToken), isActive: true },
+        where: { userId, token: tokenHash, isActive: true },
         data: { isActive: false, logoutAt: now },
       });
+      const { invalidateSessionAuthCache } = await import('./session-cache');
+      invalidateSessionAuthCache(tokenHash);
     } else {
       await this.prisma.sessionLog.updateMany({
         where: { userId, isActive: true },
         data: { isActive: false, logoutAt: now },
       });
+      const { invalidateAllSessionAuthCache } = await import('./session-cache');
+      invalidateAllSessionAuthCache();
     }
     await this.prisma.refreshToken.updateMany({
       where: { userId, revokedAt: null },
@@ -514,6 +519,8 @@ export class AuthService {
   }
 
   async revokeAllSessions(userId: string, companyId: string, adminId: string) {
+    const { invalidateAllSessionAuthCache } = await import('./session-cache');
+    invalidateAllSessionAuthCache();
     await this.devices.revokeUserSessions(userId);
     await this.audit.logAction({
       userId: adminId,

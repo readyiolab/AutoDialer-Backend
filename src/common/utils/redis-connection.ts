@@ -9,11 +9,18 @@ export function resolveRedisConnection():
   | { kind: 'options'; options: RedisOptions }
   | null {
   const redisUrl = process.env.REDIS_URL?.trim();
+  const base: RedisOptions = {
+    maxRetriesPerRequest: null,
+    connectTimeout: 3_000,
+    lazyConnect: true,
+    enableOfflineQueue: false,
+  };
+
   if (redisUrl) {
     return {
       kind: 'url',
       url: redisUrl,
-      options: { maxRetriesPerRequest: null },
+      options: { ...base },
     };
   }
 
@@ -28,10 +35,10 @@ export function resolveRedisConnection():
     host.includes('upstash.io');
 
   const options: RedisOptions = {
+    ...base,
     host,
     port,
     password,
-    maxRetriesPerRequest: null,
     ...(tlsEnabled ? { tls: {} } : {}),
   };
 

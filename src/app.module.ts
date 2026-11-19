@@ -25,7 +25,6 @@ import { TeamsModule } from './teams/teams.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { MobileModule } from './mobile/mobile.module';
 import { DevicesModule } from './devices/devices.module';
-import { MustChangePasswordGuard } from './auth/must-change-password.guard';
 
 @Module({
   imports: [
@@ -64,10 +63,6 @@ import { MustChangePasswordGuard } from './auth/must-change-password.guard';
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
-    },
-    {
-      provide: APP_GUARD,
-      useClass: MustChangePasswordGuard,
     },
   ],
 })

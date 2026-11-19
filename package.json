@@ -16,7 +16,8 @@
     "db:verify-campaigns": "ts-node scripts/verify-campaign-isolation.ts",
     "test": "jest --config jest.config.js",
     "test:unit": "jest --config jest.config.js",
-    "load:health": "node scripts/load-test.js"
+    "load:health": "node scripts/load-test.js",
+    "perf:probe": "ts-node scripts/perf-probe.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",

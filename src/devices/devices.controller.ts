@@ -25,8 +25,16 @@ export class DevicesController {
   @Get()
   @Roles(...USER_ADMIN_ROLES)
   @ApiOperation({ summary: 'List employee registered devices' })
-  list(@CurrentUser() user: any, @Query('userId') userId?: string) {
-    return this.devices.listForCompany(user.companyId, userId);
+  list(
+    @CurrentUser() user: any,
+    @Query('userId') userId?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.devices.listForCompany(user.companyId, userId, {
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+    });
   }
 
   @Post('authorize-replacement')

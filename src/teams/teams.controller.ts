@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Put, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { TeamsService } from './teams.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -17,8 +17,15 @@ export class TeamsController {
 
   @Get()
   @RequirePermissions(PERMISSION.MANAGE_TEAMS, PERMISSION.MANAGE_USERS)
-  findAll(@CurrentUser() user: any) {
-    return this.teamsService.findAll(user.companyId);
+  findAll(
+    @CurrentUser() user: any,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.teamsService.findAll(user.companyId, {
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+    });
   }
 
   @Post()
