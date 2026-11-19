@@ -14,15 +14,23 @@ async function bootstrap() {
 
   app.use(helmet());
 
-  const corsOrigins = (process.env.CORS_ORIGINS || '')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
+  const corsOrigins = Array.from(
+    new Set(
+      [
+        ...(process.env.CORS_ORIGINS || '').split(','),
+        process.env.FRONTEND_URL || '',
+        'https://autodialer.lendigomicrocare.com',
+      ]
+        .map((o) => o.trim().replace(/\/$/, ''))
+        .filter(Boolean),
+    ),
+  );
 
   app.enableCors({
-    origin: corsOrigins.length > 0 ? corsOrigins : false,
+    origin: corsOrigins,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    credentials: corsOrigins.length > 0,
+    allowedHeaders: 'Content-Type,Authorization,Accept,X-Requested-With',
+    credentials: true,
   });
 
   app.setGlobalPrefix('api');

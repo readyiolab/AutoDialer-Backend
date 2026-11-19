@@ -9,10 +9,17 @@ import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { resolveJwtSecret } from '../common/utils/jwt-secret';
 
-const realtimeCorsOrigins = (process.env.CORS_ORIGINS || '')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
+const realtimeCorsOrigins = Array.from(
+  new Set(
+    [
+      ...(process.env.CORS_ORIGINS || '').split(','),
+      process.env.FRONTEND_URL || '',
+      'https://autodialer.lendigomicrocare.com',
+    ]
+      .map((o) => o.trim().replace(/\/$/, ''))
+      .filter(Boolean),
+  ),
+);
 
 @WebSocketGateway({
   cors: {
