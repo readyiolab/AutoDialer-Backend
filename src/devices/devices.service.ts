@@ -165,6 +165,24 @@ export class DevicesService {
     companyId: string,
     meta: DeviceMeta,
   ) {
+    if (!meta.deviceId?.trim()) {
+      throw new BadRequestException('deviceId is required for Android login');
+    }
+
+    // Cheap path: device already bound in this login window — touch activity only
+    const active = await this.prisma.userDevice.findFirst({
+      where: { userId, status: 'ACTIVE', deviceId: meta.deviceId },
+    });
+    if (active?.lastAuthAt && Date.now() - active.lastAuthAt.getTime() < 120_000) {
+      return this.prisma.userDevice.update({
+        where: { id: active.id },
+        data: {
+          lastActiveAt: new Date(),
+          ...(meta.appVersion ? { appVersion: meta.appVersion } : {}),
+        },
+      });
+    }
+
     return this.assertAndBindAndroidDevice(userId, companyId, meta);
   }
 

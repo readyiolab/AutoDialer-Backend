@@ -467,20 +467,106 @@ export class MobileService {
   }
 
   async todayHome(userId: string, companyId: string) {
-    const dash = await this.dashboard(userId, companyId);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const weekAgo = new Date(Date.now() - 7 * 86400000);
 
-    const activeSession = await this.prisma.dialSession.findFirst({
-      where: { userId, companyId, status: { in: ['RUNNING', 'PAUSED'] } },
-      orderBy: { updatedAt: 'desc' },
-    });
-
-    let activeList: any = null;
-    let campaignId = activeSession?.campaignId || null;
-
-    if (!campaignId) {
-      const top = await this.prisma.lead.groupBy({
+    const [
+      totalAssigned,
+      pendingLeads,
+      callsToday,
+      connectedToday,
+      interestedLeads,
+      convertedLeads,
+      followUpsDue,
+      overdueFollowUps,
+      newLeads,
+      remainingLeads,
+      user,
+      activeSession,
+      inboxCount,
+      notesCount,
+      topCampaign,
+    ] = await Promise.all([
+      this.prisma.lead.count({ where: { companyId, assignedToId: userId } }),
+      this.prisma.lead.count({
+        where: { companyId, assignedToId: userId, status: { in: this.dialableStatuses as any } },
+      }),
+      this.prisma.callRecord.count({
+        where: { companyId, userId, createdAt: { gte: today } },
+      }),
+      this.prisma.callRecord.count({
+        where: { companyId, userId, category: 'CONNECTED', createdAt: { gte: today } },
+      }),
+      this.prisma.lead.count({
+        where: { companyId, assignedToId: userId, status: 'INTERESTED' },
+      }),
+      this.prisma.lead.count({
+        where: { companyId, assignedToId: userId, status: 'CONVERTED' },
+      }),
+      this.prisma.followUp.count({
+        where: {
+          companyId,
+          userId,
+          status: { in: ['PENDING', 'OVERDUE'] },
+          scheduledDate: { gte: today, lt: new Date(today.getTime() + 86400000) },
+        },
+      }),
+      this.prisma.followUp.count({
+        where: {
+          companyId,
+          userId,
+          OR: [
+            { status: 'OVERDUE' },
+            { status: 'PENDING', scheduledDate: { lt: today } },
+          ],
+        },
+      }),
+      this.prisma.lead.count({
+        where: {
+          companyId,
+          assignedToId: userId,
+          status: { in: ['NEW', 'ASSIGNED'] },
+          totalAttempts: 0,
+        },
+      }),
+      this.prisma.lead.count({
+        where: {
+          companyId,
+          assignedToId: userId,
+          status: { in: this.dialableStatuses as any },
+          isBlacklisted: false,
+        },
+      }),
+      this.prisma.user.findFirst({
+        where: { id: userId, companyId },
+        select: { dailyTarget: true, name: true, status: true },
+      }),
+      this.prisma.dialSession.findFirst({
+        where: { userId, companyId, status: { in: ['RUNNING', 'PAUSED'] } },
+        orderBy: { updatedAt: 'desc' },
+      }),
+      this.prisma.lead.count({
+        where: {
+          companyId,
+          assignedToId: userId,
+          isBlacklisted: false,
+          OR: [
+            { totalAttempts: 0, lastContactedAt: null },
+            { needsReview: true },
+            { status: { in: ['NO_ANSWER', 'BUSY', 'SWITCHED_OFF'] as any }, connectedCalls: 0 },
+          ],
+        },
+      }),
+      this.prisma.callRecord.count({
+        where: {
+          companyId,
+          userId,
+          remarks: { not: null },
+          createdAt: { gte: weekAgo },
+        },
+      }),
+      this.prisma.lead.groupBy({
         by: ['campaignId'],
         where: {
           companyId,
@@ -492,9 +578,11 @@ export class MobileService {
         _count: { _all: true },
         orderBy: { _count: { campaignId: 'desc' } },
         take: 1,
-      });
-      campaignId = top[0]?.campaignId || null;
-    }
+      }),
+    ]);
+
+    let activeList: any = null;
+    let campaignId = activeSession?.campaignId || topCampaign[0]?.campaignId || null;
 
     if (campaignId) {
       const campaign = await this.prisma.campaign.findFirst({
@@ -513,35 +601,125 @@ export class MobileService {
       }
     }
 
-    const inboxCount = await this.prisma.lead.count({
-      where: {
-        companyId,
-        assignedToId: userId,
-        isBlacklisted: false,
-        OR: [
-          { totalAttempts: 0, lastContactedAt: null },
-          { needsReview: true },
-          { status: { in: ['NO_ANSWER', 'BUSY', 'SWITCHED_OFF'] as any }, connectedCalls: 0 },
-        ],
-      },
-    });
-
-    const notesCount = await this.prisma.callRecord.count({
-      where: {
-        companyId,
-        userId,
-        remarks: { not: null },
-        createdAt: { gte: new Date(Date.now() - 7 * 86400000) },
-      },
-    });
-
     return {
-      ...dash,
+      totalAssigned,
+      pendingLeads,
+      callsCompletedToday: callsToday,
+      connectedCalls: connectedToday,
+      interestedLeads,
+      convertedLeads,
+      followUpsDue,
+      overdueFollowUps,
+      newLeads,
+      remainingLeads,
+      dailyTarget: user?.dailyTarget || 100,
+      workingStatus: activeSession?.status || 'OFFLINE',
+      activeSessionId: activeSession?.id || null,
       activeList,
       inboxCount,
       notesCount,
-      followUpsDue: dash.followUpsDue,
     };
+  }
+
+  /** Batch campaign progress for many campaigns (avoids N× campaignProgress). */
+  private async campaignProgressBatch(
+    userId: string,
+    companyId: string,
+    campaignIds: string[],
+  ): Promise<Map<string, Awaited<ReturnType<MobileService['campaignProgress']>>>> {
+    const result = new Map<string, Awaited<ReturnType<MobileService['campaignProgress']>>>();
+    if (!campaignIds.length) return result;
+
+    const leadBase = {
+      companyId,
+      assignedToId: userId,
+      campaignId: { in: campaignIds },
+      isBlacklisted: false,
+    };
+
+    const [totals, attempted, unanswered, callStats, connected] = await Promise.all([
+      this.prisma.lead.groupBy({
+        by: ['campaignId'],
+        where: leadBase,
+        _count: { _all: true },
+      }),
+      this.prisma.lead.groupBy({
+        by: ['campaignId'],
+        where: { ...leadBase, totalAttempts: { gt: 0 } },
+        _count: { _all: true },
+      }),
+      this.prisma.lead.groupBy({
+        by: ['campaignId'],
+        where: {
+          ...leadBase,
+          status: { in: ['NO_ANSWER', 'BUSY', 'SWITCHED_OFF'] as any },
+        },
+        _count: { _all: true },
+      }),
+      this.prisma.callRecord.groupBy({
+        by: ['campaignId'],
+        where: { companyId, userId, campaignId: { in: campaignIds } },
+        _count: { _all: true },
+        _sum: { duration: true },
+        _avg: { duration: true },
+      }),
+      this.prisma.callRecord.groupBy({
+        by: ['campaignId'],
+        where: {
+          companyId,
+          userId,
+          campaignId: { in: campaignIds },
+          category: 'CONNECTED',
+        },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const toMap = (rows: { campaignId: string | null; _count: { _all: number } }[]) =>
+      new Map(rows.filter((r) => r.campaignId).map((r) => [r.campaignId!, r._count._all]));
+
+    const totalMap = toMap(totals);
+    const attemptedMap = toMap(attempted);
+    const unansweredMap = toMap(unanswered);
+    const connectedMap = toMap(connected);
+    const talkMap = new Map(
+      callStats
+        .filter((r) => r.campaignId)
+        .map((r) => [
+          r.campaignId!,
+          {
+            callsMade: r._count._all,
+            talkSeconds: r._sum.duration || 0,
+            avgDurationSec: Math.round(r._avg.duration || 0),
+          },
+        ]),
+    );
+
+    for (const id of campaignIds) {
+      const total = totalMap.get(id) || 0;
+      const called = attemptedMap.get(id) || 0;
+      const remaining = Math.max(0, total - called);
+      const connectedCalls = connectedMap.get(id) || 0;
+      const talk = talkMap.get(id) || { callsMade: 0, talkSeconds: 0, avgDurationSec: 0 };
+      const connectionRate =
+        talk.callsMade > 0 ? Math.round((connectedCalls / talk.callsMade) * 100) : 0;
+      const percent = total > 0 ? Math.round((called / total) * 100) : 0;
+      result.set(id, {
+        total,
+        called,
+        pending: remaining,
+        connected: connectedCalls,
+        unanswered: unansweredMap.get(id) || 0,
+        talkSeconds: talk.talkSeconds,
+        avgDurationSec: talk.avgDurationSec,
+        callsMade: talk.callsMade,
+        connectionRate,
+        percent,
+        status: remaining === 0 && total > 0 ? 'COMPLETED' : 'ACTIVE',
+      });
+    }
+
+    return result;
   }
 
   async listCampaigns(userId: string, companyId: string) {
@@ -553,23 +731,36 @@ export class MobileService {
     const ids = grouped.map((g) => g.campaignId!).filter(Boolean);
     if (!ids.length) return { data: [], total: 0 };
 
-    const campaigns = await this.prisma.campaign.findMany({
-      where: { id: { in: ids }, companyId },
-      orderBy: { updatedAt: 'desc' },
-    });
-
-    const data = await Promise.all(
-      campaigns.map(async (c) => {
-        const progress = await this.campaignProgress(userId, companyId, c.id);
-        return {
-          id: c.id,
-          name: c.name,
-          createdAt: c.createdAt,
-          updatedAt: c.updatedAt,
-          ...progress,
-        };
+    const [campaigns, progressMap] = await Promise.all([
+      this.prisma.campaign.findMany({
+        where: { id: { in: ids }, companyId },
+        orderBy: { updatedAt: 'desc' },
       }),
-    );
+      this.campaignProgressBatch(userId, companyId, ids),
+    ]);
+
+    const data = campaigns.map((c) => {
+      const progress = progressMap.get(c.id) || {
+        total: 0,
+        called: 0,
+        pending: 0,
+        connected: 0,
+        unanswered: 0,
+        talkSeconds: 0,
+        avgDurationSec: 0,
+        callsMade: 0,
+        connectionRate: 0,
+        percent: 0,
+        status: 'ACTIVE',
+      };
+      return {
+        id: c.id,
+        name: c.name,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+        ...progress,
+      };
+    });
 
     return { data, total: data.length };
   }

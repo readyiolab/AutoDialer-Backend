@@ -460,6 +460,7 @@ model Lead {
   @@index([status, companyId])
   @@index([assignedToId, status])
   @@index([assignedToId, companyId, status])
+  @@index([assignedToId, companyId, campaignId])
   @@index([campaignId, status])
   @@index([companyId, createdAt])
   @@index([companyId, needsReview])
@@ -647,6 +648,8 @@ model CallRecord {
   @@index([userId, createdAt])
   @@index([leadId, createdAt])
   @@index([companyId, createdAt])
+  @@index([companyId, userId, campaignId])
+  @@index([companyId, userId, category, createdAt])
   @@map("call_records")
 }
 
