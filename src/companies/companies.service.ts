@@ -33,11 +33,13 @@ const DEFAULT_LEAD_STATUSES: { code: LeadStatus; label: string; isDialable: bool
   { code: 'BUSY', label: 'Busy', isDialable: true, displayOrder: 10 },
   { code: 'NO_ANSWER', label: 'No Answer', isDialable: true, displayOrder: 11 },
   { code: 'SWITCHED_OFF', label: 'Switched Off', isDialable: true, displayOrder: 12 },
-  { code: 'INVALID_NUMBER', label: 'Invalid Number', isDialable: false, displayOrder: 13 },
-  { code: 'DND', label: 'Do Not Call', isDialable: false, displayOrder: 14 },
-  { code: 'CONVERTED', label: 'Converted', isDialable: false, displayOrder: 15 },
-  { code: 'LOST', label: 'Lost', isDialable: false, displayOrder: 16 },
-  { code: 'CLOSED', label: 'Closed', isDialable: false, displayOrder: 17 },
+  { code: 'NOT_REACHABLE', label: 'Not Reachable', isDialable: true, displayOrder: 13 },
+  { code: 'INVALID_NUMBER', label: 'Invalid Number', isDialable: false, displayOrder: 14 },
+  { code: 'DND', label: 'Do Not Call', isDialable: false, displayOrder: 15 },
+  { code: 'EXCLUDED', label: 'Excluded', isDialable: false, displayOrder: 16 },
+  { code: 'CONVERTED', label: 'Converted', isDialable: false, displayOrder: 17 },
+  { code: 'LOST', label: 'Lost', isDialable: false, displayOrder: 18 },
+  { code: 'CLOSED', label: 'Closed', isDialable: false, displayOrder: 19 },
 ];
 
 @Injectable()

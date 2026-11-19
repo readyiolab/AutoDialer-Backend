@@ -218,11 +218,45 @@ export class MobileService {
   }
 
   async followUps(userId: string, companyId: string, type?: string) {
-    return this.followUpsService.findAll({
+    const rows = await this.followUpsService.findAll({
       companyId,
       userId,
       type: (type as any) || 'pending',
     });
+    // Flatten nested lead fields for Android clients that read top-level keys
+    return rows.map((f: any) => ({
+      ...f,
+      customerName: f.lead?.customerName,
+      mobileNumber: f.lead?.mobileNumber,
+      followUpDate: f.scheduledDate,
+      leadId: f.leadId || f.lead?.id,
+      roundId: f.roundId,
+    }));
+  }
+
+  async completeFollowUp(id: string, userId: string, companyId: string, remarks?: string) {
+    const existing = await this.prisma.followUp.findFirst({
+      where: { id, companyId, userId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Follow-up not found');
+    }
+    return this.followUpsService.markComplete(id, remarks || '', companyId);
+  }
+
+  async rescheduleFollowUp(
+    id: string,
+    userId: string,
+    companyId: string,
+    body: { scheduledDate: string; scheduledTime?: string; remarks?: string },
+  ) {
+    const existing = await this.prisma.followUp.findFirst({
+      where: { id, companyId, userId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Follow-up not found');
+    }
+    return this.followUpsService.reschedule(id, companyId, body);
   }
 
   async performance(userId: string, companyId: string, dateFrom?: string, dateTo?: string) {
@@ -414,39 +448,68 @@ export class MobileService {
     'BUSY',
     'NO_ANSWER',
     'SWITCHED_OFF',
+    'NOT_REACHABLE',
   ];
 
   private async campaignProgress(userId: string, companyId: string, campaignId: string) {
-    const base = { companyId, assignedToId: userId, campaignId, isBlacklisted: false };
-    const [total, pending, attempted, connectedCalls, talkAgg, unanswered] = await Promise.all([
-      this.prisma.lead.count({ where: base }),
-      this.prisma.lead.count({
-        where: {
-          ...base,
-          status: { in: this.dialableStatuses as any },
-          totalAttempts: 0,
-        },
-      }),
-      this.prisma.lead.count({
-        where: { ...base, totalAttempts: { gt: 0 } },
-      }),
+    const activeRound = await this.prisma.campaignRound.findFirst({
+      where: { campaignId, companyId, status: 'ACTIVE' },
+      orderBy: { roundNumber: 'desc' },
+      select: { id: true, roundNumber: true },
+    });
+
+    const callWhere: any = { companyId, userId, campaignId };
+    if (activeRound) callWhere.roundId = activeRound.id;
+
+    const [connectedCalls, talkAgg, unanswered] = await Promise.all([
       this.prisma.callRecord.count({
-        where: { companyId, userId, campaignId, category: 'CONNECTED' },
+        where: { ...callWhere, category: 'CONNECTED' },
       }),
       this.prisma.callRecord.aggregate({
-        where: { companyId, userId, campaignId },
+        where: callWhere,
         _sum: { duration: true },
         _avg: { duration: true },
         _count: true,
       }),
       this.prisma.lead.count({
         where: {
-          ...base,
-          status: { in: ['NO_ANSWER', 'BUSY', 'SWITCHED_OFF'] as any },
+          companyId,
+          assignedToId: userId,
+          campaignId,
+          isBlacklisted: false,
+          status: { in: ['NO_ANSWER', 'BUSY', 'SWITCHED_OFF', 'NOT_REACHABLE'] as any },
+          ...(activeRound ? { currentRoundId: activeRound.id } : {}),
         },
       }),
     ]);
-    const called = attempted;
+
+    let total: number;
+    let called: number;
+    if (activeRound) {
+      const [membershipTotal, membershipCalled] = await Promise.all([
+        this.prisma.campaignRoundLead.count({
+          where: { roundId: activeRound.id, assignedToId: userId },
+        }),
+        this.prisma.campaignRoundLead.count({
+          where: {
+            roundId: activeRound.id,
+            assignedToId: userId,
+            roundAttemptCount: { gt: 0 },
+          },
+        }),
+      ]);
+      total = membershipTotal;
+      called = membershipCalled;
+    } else {
+      const base = { companyId, assignedToId: userId, campaignId, isBlacklisted: false };
+      const [t, attempted] = await Promise.all([
+        this.prisma.lead.count({ where: base }),
+        this.prisma.lead.count({ where: { ...base, totalAttempts: { gt: 0 } } }),
+      ]);
+      total = t;
+      called = attempted;
+    }
+
     const remaining = Math.max(0, total - called);
     const percent = total > 0 ? Math.round((called / total) * 100) : 0;
     const callsMade = talkAgg._count || 0;
@@ -463,6 +526,7 @@ export class MobileService {
       connectionRate,
       percent,
       status: remaining === 0 && total > 0 ? 'COMPLETED' : 'ACTIVE',
+      currentRoundNumber: activeRound?.roundNumber ?? null,
     };
   }
 
@@ -716,6 +780,7 @@ export class MobileService {
         connectionRate,
         percent,
         status: remaining === 0 && total > 0 ? 'COMPLETED' : 'ACTIVE',
+        currentRoundNumber: null,
       });
     }
 

@@ -13,11 +13,13 @@ import { clampPage, clampPageSize, clampListLimit } from '../common/utils/pagina
 const DISPOSITION_ALIASES: Record<string, CallDisposition> = {
   NO_ANSWER: CallDisposition.NOT_PICKED,
   NOT_ANSWERED: CallDisposition.NOT_PICKED,
-  CONVERTED: CallDisposition.APPLICATION_SUBMITTED,
+  CONVERTED: CallDisposition.CONVERTED,
   INVALID: CallDisposition.WRONG_NUMBER,
   INVALID_NUMBER: CallDisposition.WRONG_NUMBER,
-  FOLLOW_UP: CallDisposition.CALL_BACK,
-  FOLLOW_UP_REQUIRED: CallDisposition.CALL_BACK,
+  FOLLOW_UP: CallDisposition.FOLLOW_UP,
+  FOLLOW_UP_REQUIRED: CallDisposition.FOLLOW_UP,
+  EXCLUDED: CallDisposition.EXCLUDED,
+  DO_NOT_CALL: CallDisposition.DND,
 };
 
 const CATEGORY_ALIASES: Record<string, CallCategory> = {
@@ -64,11 +66,20 @@ export class CallsService {
       ? await this.prisma.campaign.findFirst({ where: { id: lead.campaignId, companyId } })
       : null;
     const maxAttempts = campaign?.maxAttemptsPerLead || 10;
-    if ((lead.totalAttempts || 0) >= maxAttempts) {
-      throw new BadRequestException('Maximum call attempts reached for this lead');
+    const roundId = lead.currentRoundId || null;
+    const membership = roundId
+      ? await this.prisma.campaignRoundLead.findFirst({
+          where: { roundId, leadId: lead.id },
+          select: { roundAttemptCount: true },
+        })
+      : null;
+    const roundAttempts = membership?.roundAttemptCount ?? lead.totalAttempts ?? 0;
+    if (roundAttempts >= maxAttempts) {
+      throw new BadRequestException('Maximum call attempts reached for this lead in the current round');
     }
 
     const attemptNumber = (lead.totalAttempts || 0) + 1;
+    const roundAttemptNumber = roundAttempts + 1;
 
     return this.prisma.$transaction(async (tx) => {
       const callRecord = await tx.callRecord.create({
@@ -76,12 +87,13 @@ export class CallsService {
           leadId: dto.leadId,
           userId,
           campaignId: dto.campaignId || lead.campaignId,
+          roundId,
           companyId,
           startTime: new Date(dto.startTime),
           endTime: dto.endTime ? new Date(dto.endTime) : null,
           duration: dto.duration || 0,
           rawCallState: dto.rawCallState,
-          attemptNumber,
+          attemptNumber: roundAttemptNumber,
         },
         include: {
           lead: { select: { customerName: true, mobileNumber: true } },
@@ -95,6 +107,13 @@ export class CallsService {
           lastContactedAt: new Date(dto.startTime),
         },
       });
+
+      if (roundId) {
+        await tx.campaignRoundLead.updateMany({
+          where: { roundId, leadId: lead.id },
+          data: { roundAttemptCount: roundAttemptNumber },
+        });
+      }
 
       return callRecord;
     });
@@ -131,10 +150,16 @@ export class CallsService {
         newStatus = LeadStatus.NOT_INTERESTED;
         break;
       case CallDisposition.CALL_BACK:
-        newStatus =
-          String(dto.disposition || '').toUpperCase().includes('FOLLOW')
-            ? LeadStatus.FOLLOW_UP_REQUIRED
-            : LeadStatus.CALL_BACK;
+        newStatus = LeadStatus.CALL_BACK;
+        break;
+      case CallDisposition.FOLLOW_UP:
+        newStatus = LeadStatus.FOLLOW_UP_REQUIRED;
+        break;
+      case CallDisposition.CONVERTED:
+        newStatus = LeadStatus.CONVERTED;
+        break;
+      case CallDisposition.EXCLUDED:
+        newStatus = LeadStatus.EXCLUDED;
         break;
       case CallDisposition.DND:
         newStatus = LeadStatus.DND;
@@ -155,11 +180,13 @@ export class CallsService {
         newStatus = LeadStatus.SWITCHED_OFF;
         break;
       case CallDisposition.NOT_PICKED:
-      case CallDisposition.NOT_REACHABLE:
       case CallDisposition.CALL_DECLINED:
       case CallDisposition.NETWORK_ERROR:
       case CallDisposition.FAILED:
         newStatus = LeadStatus.NO_ANSWER;
+        break;
+      case CallDisposition.NOT_REACHABLE:
+        newStatus = LeadStatus.NOT_REACHABLE;
         break;
       case CallDisposition.WRONG_NUMBER:
       case CallDisposition.NUMBER_BELONGS_TO_SOMEONE_ELSE:
@@ -168,6 +195,8 @@ export class CallsService {
       default:
         newStatus = LeadStatus.CONTACTED;
     }
+
+    const roundId = callRecord.roundId || callRecord.lead.currentRoundId || null;
 
     const isConnected = category === CallCategory.CONNECTED;
     const previousStatus = callRecord.lead.status;
@@ -183,6 +212,7 @@ export class CallsService {
           followUpTime: dto.followUpTime,
           priority: dto.priority,
           voiceNoteUrl: dto.voiceNoteUrl,
+          ...(roundId && !callRecord.roundId ? { roundId } : {}),
         },
       });
 
@@ -200,6 +230,7 @@ export class CallsService {
         await tx.leadStatusHistory.create({
           data: {
             leadId: callRecord.leadId,
+            roundId,
             fromStatus: previousStatus,
             toStatus: newStatus,
             changedById: userId,
@@ -210,7 +241,8 @@ export class CallsService {
       }
 
       if (
-        disposition === CallDisposition.CALL_BACK &&
+        (disposition === CallDisposition.CALL_BACK ||
+          disposition === CallDisposition.FOLLOW_UP) &&
         dto.followUpDate &&
         !(await tx.followUp.findFirst({ where: { callRecordId } }))
       ) {
@@ -219,6 +251,7 @@ export class CallsService {
             leadId: callRecord.leadId,
             userId,
             campaignId: callRecord.campaignId || callRecord.lead?.campaignId || null,
+            roundId,
             callRecordId,
             scheduledDate: new Date(dto.followUpDate),
             scheduledTime: dto.followUpTime,

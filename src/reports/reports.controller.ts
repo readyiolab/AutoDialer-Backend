@@ -81,6 +81,16 @@ export class ReportsController {
     return this.reportsService.getCampaignMIS(user.companyId);
   }
 
+  @Get('campaign/:campaignId/rounds')
+  @RequirePermissions(PERMISSION.VIEW_MIS, PERMISSION.VIEW_REPORTS)
+  @ApiOperation({ summary: 'Round-wise comparison for a campaign (unique vs attempts)' })
+  getCampaignRounds(
+    @Param('campaignId') campaignId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.reportsService.getCampaignRoundsComparison(user.companyId, campaignId);
+  }
+
   @Get('branch')
   @RequirePermissions(PERMISSION.VIEW_MIS, PERMISSION.VIEW_REPORTS)
   @ApiOperation({ summary: 'Branch & territory comparison performance report' })
@@ -124,6 +134,15 @@ export class ReportsController {
       case 'campaign':
         data = await this.reportsService.getCampaignMIS(user.companyId);
         break;
+      case 'campaign-rounds':
+        if (!query.campaignId) {
+          throw new BadRequestException('campaignId query required for campaign-rounds export');
+        }
+        data = await this.reportsService.getCampaignRoundsComparison(
+          user.companyId,
+          String(query.campaignId),
+        );
+        break;
       case 'branch':
         data = await this.reportsService.getBranchMIS(user.companyId);
         break;
@@ -133,7 +152,7 @@ export class ReportsController {
 
     const rows = Array.isArray(data)
       ? data
-      : data?.employees || data?.campaigns || data?.branches || [data];
+      : data?.rounds || data?.employees || data?.campaigns || data?.branches || [data];
     if (!rows.length) {
       res.setHeader('Content-Type', 'text/csv');
       return res.send('No data\n');

@@ -65,6 +65,18 @@ export class FollowUpsController {
     return this.followUpsService.reassign(id, reassignedToId, user.companyId);
   }
 
+  @Patch(':id/reschedule')
+  @RequirePermissions(PERMISSION.MANAGE_LEADS, PERMISSION.CALL_ASSIGNED_LEADS, PERMISSION.SUBMIT_DISPOSITION)
+  @ApiOperation({ summary: 'Reschedule follow-up date/time' })
+  reschedule(
+    @Param('id') id: string,
+    @Body()
+    body: { scheduledDate: string; scheduledTime?: string; remarks?: string },
+    @CurrentUser() user: any,
+  ) {
+    return this.followUpsService.reschedule(id, user.companyId, body);
+  }
+
   @Patch(':id/escalate')
   @RequirePermissions(PERMISSION.ALLOCATE_LEADS, PERMISSION.MANAGE_LEADS, PERMISSION.MONITOR_LIVE)
   @ApiOperation({ summary: 'Escalate overdue follow-up to manager' })

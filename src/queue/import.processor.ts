@@ -102,8 +102,60 @@ export class ImportProcessor {
       },
     });
 
+    if (history.campaignId) {
+      await this.ensureRoundOneMembership(history.campaignId, companyId);
+    }
+
     this.logger.log(`Import ${importHistoryId} completed: ${imported} leads`);
     return { imported, duplicates: skippedDupes };
+  }
+
+  /** Attach imported leads to Round 1 (create round if needed). */
+  private async ensureRoundOneMembership(campaignId: string, companyId: string) {
+    let round = await this.prisma.campaignRound.findFirst({
+      where: { campaignId, roundNumber: 1 },
+    });
+    if (!round) {
+      round = await this.prisma.campaignRound.create({
+        data: {
+          campaignId,
+          companyId,
+          roundNumber: 1,
+          status: 'ACTIVE',
+          selectionRules: { auto: true },
+          startedAt: new Date(),
+        },
+      });
+    }
+
+    const missing = await this.prisma.lead.findMany({
+      where: {
+        campaignId,
+        companyId,
+        roundMemberships: { none: { roundId: round.id } },
+      },
+      select: { id: true, status: true, assignedToId: true, totalAttempts: true },
+      take: 10000,
+    });
+    if (!missing.length) return;
+
+    for (let i = 0; i < missing.length; i += 500) {
+      const slice = missing.slice(i, i + 500);
+      await this.prisma.campaignRoundLead.createMany({
+        data: slice.map((l) => ({
+          roundId: round!.id,
+          leadId: l.id,
+          assignedToId: l.assignedToId,
+          statusAtEntry: l.status,
+          roundAttemptCount: l.totalAttempts || 0,
+        })),
+        skipDuplicates: true,
+      });
+      await this.prisma.lead.updateMany({
+        where: { id: { in: slice.map((l) => l.id) }, companyId },
+        data: { currentRoundId: round!.id },
+      });
+    }
   }
 
   writeRejectedFile(rejected: any[], importId: string): string | null {

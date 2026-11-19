@@ -20,6 +20,7 @@ const DIALABLE_STATUSES: LeadStatus[] = [
   'BUSY',
   'NO_ANSWER',
   'SWITCHED_OFF',
+  'NOT_REACHABLE',
 ];
 
 @Injectable()
@@ -778,22 +779,42 @@ export class DialerService {
       }
     }
 
+    const activeRound = effectiveCampaignId
+      ? await this.prisma.campaignRound.findFirst({
+          where: {
+            campaignId: effectiveCampaignId,
+            companyId,
+            status: 'ACTIVE',
+          },
+          orderBy: { roundNumber: 'desc' },
+          select: { id: true },
+        })
+      : null;
+
     const where: any = {
       assignedToId: userId,
       companyId,
       isBlacklisted: false,
       status: { in: DIALABLE_STATUSES },
-      totalAttempts: { lt: maxAttempts },
     };
     if (effectiveCampaignId) where.campaignId = effectiveCampaignId;
+    if (activeRound) where.currentRoundId = activeRound.id;
     if (excludeLeadId) where.id = { not: excludeLeadId };
 
+    // Prefer leads under round attempt cap when round membership exists
     const candidates = await this.prisma.lead.findMany({
       where,
       orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-      take: 20,
+      take: 40,
       include: {
         campaign: { select: { id: true, name: true, maxAttemptsPerLead: true } },
+        roundMemberships: activeRound
+          ? {
+              where: { roundId: activeRound.id },
+              select: { roundAttemptCount: true },
+              take: 1,
+            }
+          : false,
       },
     });
 
@@ -801,6 +822,9 @@ export class DialerService {
     let selected = null as any;
 
     for (const lead of candidates) {
+      const roundAttempts =
+        (lead as any).roundMemberships?.[0]?.roundAttemptCount ?? lead.totalAttempts ?? 0;
+      if (roundAttempts >= maxAttempts) continue;
       if (lead.status === 'CALL_BACK' || lead.status === 'FOLLOW_UP_REQUIRED') {
         if (lead.nextFollowUpAt && lead.nextFollowUpAt > now) continue;
       }
@@ -812,11 +836,34 @@ export class DialerService {
       break;
     }
 
-    if (selected && sessionId) {
-      await this.prisma.dialSession.update({
-        where: { id: sessionId },
-        data: { currentLeadId: selected.id },
+    if (selected) {
+      const claimed = await this.prisma.$transaction(async (tx) => {
+        const locked: Array<{ id: string }> = await tx.$queryRaw`
+          SELECT id FROM leads
+          WHERE id = ${selected.id}
+            AND companyId = ${companyId}
+            AND assignedToId = ${userId}
+          FOR UPDATE SKIP LOCKED
+        `;
+        if (!locked.length) return null;
+        if (sessionId) {
+          await tx.dialSession.update({
+            where: { id: sessionId },
+            data: { currentLeadId: selected.id },
+          });
+        }
+        return selected;
       });
+      if (!claimed) {
+        return this.pickNextLead(
+          userId,
+          companyId,
+          effectiveCampaignId,
+          sessionId,
+          selected.id,
+        );
+      }
+      selected = claimed;
     }
 
     const pendingCount = await this.prisma.lead.count({ where });

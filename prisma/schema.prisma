@@ -40,28 +40,22 @@ enum LeadStatus {
   BUSY
   NO_ANSWER
   SWITCHED_OFF
+  NOT_REACHABLE
   INVALID_NUMBER
   CONVERTED
   LOST
   CLOSED
   DND
+  EXCLUDED
   DOCUMENTS_REQUIRED
   APPLICATION_SUBMITTED
   PAYMENT_PROMISED
   LOAN_REQUIRED
 }
 
-enum LeadPriority {
-  LOW
-  MEDIUM
-  HIGH
-  URGENT
-}
-
-enum CampaignStatus {
-  DRAFT
+enum CampaignRoundStatus {
+  PLANNED
   ACTIVE
-  PAUSED
   COMPLETED
 }
 
@@ -69,6 +63,7 @@ enum CallDisposition {
   INTERESTED
   NOT_INTERESTED
   CALL_BACK
+  FOLLOW_UP
   WRONG_NUMBER
   NUMBER_BELONGS_TO_SOMEONE_ELSE
   LANGUAGE_BARRIER
@@ -86,6 +81,22 @@ enum CallDisposition {
   FAILED
   DND
   DUPLICATE_LEAD
+  EXCLUDED
+  CONVERTED
+}
+
+enum LeadPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
 }
 
 enum CallCategory {
@@ -227,6 +238,7 @@ model Company {
   automationRules      AutomationRule[]
   userDevices          UserDevice[]
   refreshTokens        RefreshToken[]
+  campaignRounds       CampaignRound[]
 
   @@map("companies")
 }
@@ -373,6 +385,8 @@ model User {
   assignmentsPerformed LeadAssignmentHistory[] @relation("AssignmentPerformedBy")
   userDevices         UserDevice[]
   refreshTokens       RefreshToken[]
+  createdRounds       CampaignRound[]         @relation("RoundCreatedBy")
+  roundLeadAssignments CampaignRoundLead[]    @relation("RoundLeadAssignee")
 
   @@unique([employeeId, companyId])
   @@index([companyId, status])
@@ -440,6 +454,7 @@ model Lead {
   ptpAmount          Decimal?     @db.Decimal(12, 2)
   importHistoryId    String?
   allocationBatchId  String?
+  currentRoundId     String?
   needsReview        Boolean      @default(false)
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
@@ -449,12 +464,14 @@ model Lead {
   campaign          Campaign?               @relation(fields: [campaignId], references: [id])
   importHistory     ImportHistory?          @relation(fields: [importHistoryId], references: [id])
   allocationBatch   AllocationBatch?        @relation(fields: [allocationBatchId], references: [id])
+  currentRound      CampaignRound?          @relation("LeadCurrentRound", fields: [currentRoundId], references: [id])
   callRecords       CallRecord[]
   followUps         FollowUp[]
   statusHistory     LeadStatusHistory[]
   communicationLogs CommunicationLog[]
   dialSessions      DialSession[]
   assignmentHistory LeadAssignmentHistory[]
+  roundMemberships  CampaignRoundLead[]
 
   @@index([mobileNumber])
   @@index([companyId, mobileNumber])
@@ -468,6 +485,7 @@ model Lead {
   @@index([campaignId, status])
   @@index([companyId, createdAt])
   @@index([companyId, needsReview])
+  @@index([currentRoundId])
   @@map("leads")
 }
 
@@ -475,23 +493,26 @@ model LeadAssignmentHistory {
   id           String   @id @default(uuid())
   leadId       String
   companyId    String
+  roundId      String?
   fromUserId   String?
   toUserId     String?
   assignedById String
   reason       String?
   remarks      String?
-  source       String   @default("MANUAL") // ALLOCATE | TRANSFER | REASSIGN | SYSTEM
+  source       String   @default("MANUAL") // ALLOCATE | TRANSFER | REASSIGN | SYSTEM | ROUND_ALLOCATE
   createdAt    DateTime @default(now())
 
-  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  company    Company  @relation(fields: [companyId], references: [id])
-  fromUser   User?    @relation("AssignmentFrom", fields: [fromUserId], references: [id])
-  toUser     User?    @relation("AssignmentTo", fields: [toUserId], references: [id])
-  assignedBy User     @relation("AssignmentPerformedBy", fields: [assignedById], references: [id])
+  lead       Lead           @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  company    Company        @relation(fields: [companyId], references: [id])
+  round      CampaignRound? @relation(fields: [roundId], references: [id])
+  fromUser   User?          @relation("AssignmentFrom", fields: [fromUserId], references: [id])
+  toUser     User?          @relation("AssignmentTo", fields: [toUserId], references: [id])
+  assignedBy User           @relation("AssignmentPerformedBy", fields: [assignedById], references: [id])
 
   @@index([leadId, createdAt])
   @@index([companyId, createdAt])
   @@index([toUserId, createdAt])
+  @@index([roundId, createdAt])
   @@map("lead_assignment_history")
 }
 
@@ -518,6 +539,7 @@ model AutomationRule {
 model LeadStatusHistory {
   id          String   @id @default(uuid())
   leadId      String
+  roundId     String?
   fromStatus  String?
   toStatus    String
   changedById String
@@ -525,10 +547,12 @@ model LeadStatusHistory {
   callId      String?
   createdAt   DateTime @default(now())
 
-  lead      Lead @relation(fields: [leadId], references: [id])
-  changedBy User @relation(fields: [changedById], references: [id])
+  lead      Lead           @relation(fields: [leadId], references: [id])
+  round     CampaignRound? @relation(fields: [roundId], references: [id])
+  changedBy User           @relation(fields: [changedById], references: [id])
 
   @@index([leadId, createdAt])
+  @@index([roundId, createdAt])
   @@map("lead_status_history")
 }
 
@@ -580,9 +604,59 @@ model Campaign {
   assignments       CampaignAssignment[]
   allocationBatches AllocationBatch[]
   dialSessions      DialSession[]
+  rounds            CampaignRound[]
 
   @@index([companyId, status])
   @@map("campaigns")
+}
+
+model CampaignRound {
+  id             String              @id @default(uuid())
+  campaignId     String
+  companyId      String
+  roundNumber    Int
+  status         CampaignRoundStatus @default(PLANNED)
+  selectionRules Json?               @default("{}")
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdById    String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  campaign            Campaign                @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  company             Company                 @relation(fields: [companyId], references: [id])
+  createdBy           User?                   @relation("RoundCreatedBy", fields: [createdById], references: [id])
+  memberships         CampaignRoundLead[]
+  currentLeads        Lead[]                  @relation("LeadCurrentRound")
+  callRecords         CallRecord[]
+  followUps           FollowUp[]
+  assignmentHistory   LeadAssignmentHistory[]
+  statusHistory       LeadStatusHistory[]
+  allocationBatches   AllocationBatch[]
+
+  @@unique([campaignId, roundNumber])
+  @@index([companyId, campaignId, status])
+  @@map("campaign_rounds")
+}
+
+model CampaignRoundLead {
+  id                String     @id @default(uuid())
+  roundId           String
+  leadId            String
+  assignedToId      String?
+  statusAtEntry     LeadStatus
+  roundAttemptCount Int        @default(0)
+  enteredAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  round      CampaignRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  lead       Lead          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assignedTo User?         @relation("RoundLeadAssignee", fields: [assignedToId], references: [id])
+
+  @@unique([roundId, leadId])
+  @@index([roundId, assignedToId])
+  @@index([leadId, roundId])
+  @@map("campaign_round_leads")
 }
 
 model CampaignAssignment {
@@ -605,6 +679,7 @@ model AllocationBatch {
   id           String           @id @default(uuid())
   companyId    String
   campaignId   String?
+  roundId      String?
   method       AllocationMethod
   ruleSnapshot Json?            @default("{}")
   totalLeads   Int              @default(0)
@@ -612,12 +687,14 @@ model AllocationBatch {
   performedById String
   createdAt    DateTime         @default(now())
 
-  company     Company   @relation(fields: [companyId], references: [id])
-  campaign    Campaign? @relation(fields: [campaignId], references: [id])
-  performedBy User      @relation(fields: [performedById], references: [id])
+  company     Company        @relation(fields: [companyId], references: [id])
+  campaign    Campaign?      @relation(fields: [campaignId], references: [id])
+  round       CampaignRound? @relation(fields: [roundId], references: [id])
+  performedBy User           @relation(fields: [performedById], references: [id])
   leads       Lead[]
 
   @@index([companyId, createdAt])
+  @@index([roundId])
   @@map("allocation_batches")
 }
 
@@ -626,6 +703,7 @@ model CallRecord {
   leadId        String
   userId        String
   campaignId    String?
+  roundId       String?
   companyId     String
   startTime     DateTime
   endTime       DateTime?
@@ -642,11 +720,12 @@ model CallRecord {
   dialSessionId String?
   createdAt     DateTime         @default(now())
 
-  lead        Lead         @relation(fields: [leadId], references: [id])
-  user        User         @relation(fields: [userId], references: [id])
-  campaign    Campaign?    @relation(fields: [campaignId], references: [id])
-  company     Company      @relation(fields: [companyId], references: [id])
-  dialSession DialSession? @relation(fields: [dialSessionId], references: [id])
+  lead        Lead           @relation(fields: [leadId], references: [id])
+  user        User           @relation(fields: [userId], references: [id])
+  campaign    Campaign?      @relation(fields: [campaignId], references: [id])
+  round       CampaignRound? @relation(fields: [roundId], references: [id])
+  company     Company        @relation(fields: [companyId], references: [id])
+  dialSession DialSession?   @relation(fields: [dialSessionId], references: [id])
   followUp    FollowUp?
 
   @@index([userId, createdAt])
@@ -656,6 +735,8 @@ model CallRecord {
   @@index([companyId, userId, category, createdAt])
   @@index([companyId, campaignId, createdAt])
   @@index([companyId, disposition, createdAt])
+  @@index([campaignId, roundId, createdAt])
+  @@index([roundId, createdAt])
   @@map("call_records")
 }
 
@@ -722,6 +803,7 @@ model FollowUp {
   leadId         String
   userId         String
   campaignId     String?
+  roundId        String?
   callRecordId   String?        @unique
   scheduledDate  DateTime
   scheduledTime  String?
@@ -734,18 +816,20 @@ model FollowUp {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
-  lead         Lead        @relation(fields: [leadId], references: [id])
-  user         User        @relation("UserFollowUps", fields: [userId], references: [id])
-  campaign     Campaign?   @relation(fields: [campaignId], references: [id])
-  callRecord   CallRecord? @relation(fields: [callRecordId], references: [id])
-  reassignedTo User?       @relation("ReassignedFollowUps", fields: [reassignedToId], references: [id])
-  escalatedTo  User?       @relation("EscalatedFollowUps", fields: [escalatedToId], references: [id])
-  company      Company     @relation(fields: [companyId], references: [id])
+  lead         Lead           @relation(fields: [leadId], references: [id])
+  user         User           @relation("UserFollowUps", fields: [userId], references: [id])
+  campaign     Campaign?      @relation(fields: [campaignId], references: [id])
+  round        CampaignRound? @relation(fields: [roundId], references: [id])
+  callRecord   CallRecord?    @relation(fields: [callRecordId], references: [id])
+  reassignedTo User?          @relation("ReassignedFollowUps", fields: [reassignedToId], references: [id])
+  escalatedTo  User?          @relation("EscalatedFollowUps", fields: [escalatedToId], references: [id])
+  company      Company        @relation(fields: [companyId], references: [id])
 
   @@index([userId, scheduledDate])
   @@index([status, scheduledDate])
   @@index([companyId, status, scheduledDate])
   @@index([campaignId, status, scheduledDate])
+  @@index([roundId, status, scheduledDate])
   @@map("follow_ups")
 }
 

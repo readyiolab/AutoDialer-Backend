@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   Query,
@@ -180,6 +181,28 @@ export class MobileController {
   @ApiBearerAuth()
   followups(@CurrentUser() user: any, @Query('type') type?: string) {
     return this.mobile.followUps(user.userId, user.companyId, type);
+  }
+
+  @Patch('followups/:id/complete')
+  @UseGuards(JwtAuthGuard, TelecallerGuard)
+  @ApiBearerAuth()
+  completeFollowUp(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Body('remarks') remarks?: string,
+  ) {
+    return this.mobile.completeFollowUp(id, user.userId, user.companyId, remarks);
+  }
+
+  @Patch('followups/:id/reschedule')
+  @UseGuards(JwtAuthGuard, TelecallerGuard)
+  @ApiBearerAuth()
+  rescheduleFollowUp(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Body() body: { scheduledDate: string; scheduledTime?: string; remarks?: string },
+  ) {
+    return this.mobile.rescheduleFollowUp(id, user.userId, user.companyId, body);
   }
 
   @Get('performance')

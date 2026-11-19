@@ -685,6 +685,59 @@ export class ReportsService {
     };
   }
 
+  async getCampaignRoundsComparison(companyId: string, campaignId: string) {
+    const campaign = await this.prisma.campaign.findFirst({
+      where: { id: campaignId, companyId },
+      select: { id: true, name: true },
+    });
+    if (!campaign) return { campaign: null, rounds: [] };
+
+    const rounds = await this.prisma.campaignRound.findMany({
+      where: { campaignId, companyId },
+      orderBy: { roundNumber: 'asc' },
+    });
+
+    const rows = await Promise.all(
+      rounds.map(async (r) => {
+        const [membership, attemptedUnique, totalAttempts, dispositions] = await Promise.all([
+          this.prisma.campaignRoundLead.count({ where: { roundId: r.id } }),
+          this.prisma.callRecord
+            .groupBy({ by: ['leadId'], where: { roundId: r.id, companyId } })
+            .then((x) => x.length),
+          this.prisma.callRecord.count({ where: { roundId: r.id, companyId } }),
+          this.prisma.callRecord.groupBy({
+            by: ['disposition'],
+            where: { roundId: r.id, companyId, disposition: { not: null } },
+            _count: { _all: true },
+          }),
+        ]);
+        const disp: Record<string, number> = {};
+        for (const d of dispositions) {
+          if (d.disposition) disp[d.disposition] = d._count._all;
+        }
+        return {
+          id: r.id,
+          roundNumber: r.roundNumber,
+          status: r.status,
+          uniqueLeads: membership,
+          uniqueAttempted: attemptedUnique,
+          totalCallAttempts: totalAttempts,
+          completionPct:
+            membership > 0
+              ? Math.round((attemptedUnique / membership) * 1000) / 10
+              : 0,
+          dispositions: disp,
+        };
+      }),
+    );
+
+    return {
+      campaign,
+      rounds: rows,
+      note: 'uniqueAttempted = distinct leads with ≥1 call in that round; totalCallAttempts = all call records.',
+    };
+  }
+
   async getCampaignMIS(companyId: string) {
     const campaigns = await this.prisma.campaign.findMany({
       where: { companyId },

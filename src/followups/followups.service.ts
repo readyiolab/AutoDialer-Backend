@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FollowUpStatus } from '@prisma/client';
@@ -85,13 +86,63 @@ export class FollowUpsService {
     if (!followUp) throw new NotFoundException('Follow-up not found');
     await this.assertUserInCompany(reassignedToId, companyId);
 
-    return this.prisma.followUp.update({
-      where: { id },
-      data: {
-        reassignedToId,
-        status: FollowUpStatus.REASSIGNED,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.followUp.update({
+        where: { id },
+        data: {
+          reassignedToId,
+          userId: reassignedToId,
+          status: FollowUpStatus.REASSIGNED,
+        },
+      });
+
+      await tx.lead.updateMany({
+        where: { id: followUp.leadId, companyId },
+        data: { assignedToId: reassignedToId },
+      });
+
+      if (followUp.roundId) {
+        await tx.campaignRoundLead.updateMany({
+          where: { roundId: followUp.roundId, leadId: followUp.leadId },
+          data: { assignedToId: reassignedToId },
+        });
+      }
+
+      return updated;
     });
+  }
+
+  async reschedule(
+    id: string,
+    companyId: string,
+    data: { scheduledDate: string; scheduledTime?: string; remarks?: string },
+  ) {
+    const followUp = await this.prisma.followUp.findFirst({ where: { id, companyId } });
+    if (!followUp) throw new NotFoundException('Follow-up not found');
+
+    const scheduledDate = new Date(data.scheduledDate);
+    if (Number.isNaN(scheduledDate.getTime())) {
+      throw new BadRequestException('Invalid scheduledDate');
+    }
+
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.followUp.update({
+        where: { id },
+        data: {
+          scheduledDate,
+          scheduledTime: data.scheduledTime ?? followUp.scheduledTime,
+          remarks: data.remarks ?? followUp.remarks,
+          status: FollowUpStatus.PENDING,
+          completedAt: null,
+        },
+      }),
+      this.prisma.lead.updateMany({
+        where: { id: followUp.leadId, companyId },
+        data: { nextFollowUpAt: scheduledDate },
+      }),
+    ]);
+
+    return updated;
   }
 
   async escalate(id: string, escalatedToId: string, companyId: string) {

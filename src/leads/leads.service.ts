@@ -185,6 +185,23 @@ export class LeadsService {
           orderBy: { createdAt: 'desc' },
           include: { changedBy: { select: { id: true, name: true } } },
         },
+        assignmentHistory: {
+          take: LEAD_DETAIL_LIMIT,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            toUser: { select: { id: true, name: true } },
+            fromUser: { select: { id: true, name: true } },
+            assignedBy: { select: { id: true, name: true } },
+          },
+        },
+        roundMemberships: {
+          orderBy: { enteredAt: 'asc' },
+          include: {
+            round: { select: { id: true, roundNumber: true, status: true } },
+            assignedTo: { select: { id: true, name: true } },
+          },
+        },
+        currentRound: { select: { id: true, roundNumber: true, status: true } },
         _count: {
           select: {
             callRecords: true,
@@ -472,6 +489,10 @@ export class LeadsService {
       throw new BadRequestException('No eligible agents for allocation');
     }
 
+    if (dto.campaignId) {
+      await this.ensureCampaignRoundOne(dto.campaignId, companyId, performedById);
+    }
+
     const result = await this.prisma.$transaction(async (tx) => {
       const batch = await tx.allocationBatch.create({
         data: {
@@ -524,10 +545,16 @@ export class LeadsService {
           },
         });
 
+        const leadRow = await tx.lead.findFirst({
+          where: { id: leadId, companyId },
+          select: { currentRoundId: true },
+        });
+
         await tx.leadAssignmentHistory.create({
           data: {
             leadId,
             companyId,
+            roundId: leadRow?.currentRoundId || null,
             fromUserId: null,
             toUserId: userId,
             assignedById: performedById,
@@ -543,6 +570,13 @@ export class LeadsService {
             where: { campaignId_userId: { campaignId: dto.campaignId, userId } },
             data: { leadsAssigned: { increment: 1 } },
           });
+
+          if (leadRow?.currentRoundId) {
+            await tx.campaignRoundLead.updateMany({
+              where: { roundId: leadRow.currentRoundId, leadId },
+              data: { assignedToId: userId },
+            });
+          }
         }
         allocated++;
       }
@@ -1304,5 +1338,58 @@ export class LeadsService {
       orderBy: { createdAt: 'desc' },
       include: { user: { select: { id: true, name: true } } },
     });
+  }
+
+  /** Ensure Round 1 exists and covers campaign leads before allocate. */
+  private async ensureCampaignRoundOne(
+    campaignId: string,
+    companyId: string,
+    createdById?: string,
+  ) {
+    let round = await this.prisma.campaignRound.findFirst({
+      where: { campaignId, roundNumber: 1 },
+    });
+    if (!round) {
+      round = await this.prisma.campaignRound.create({
+        data: {
+          campaignId,
+          companyId,
+          roundNumber: 1,
+          status: 'ACTIVE',
+          selectionRules: { auto: true },
+          startedAt: new Date(),
+          createdById: createdById || null,
+        },
+      });
+    }
+
+    const missing = await this.prisma.lead.findMany({
+      where: {
+        campaignId,
+        companyId,
+        roundMemberships: { none: { roundId: round.id } },
+      },
+      select: { id: true, status: true, assignedToId: true, totalAttempts: true },
+      take: 10000,
+    });
+    if (!missing.length) return;
+
+    for (let i = 0; i < missing.length; i += 500) {
+      const slice = missing.slice(i, i + 500);
+      await this.prisma.campaignRoundLead.createMany({
+        data: slice.map((l) => ({
+          roundId: round!.id,
+          leadId: l.id,
+          assignedToId: l.assignedToId,
+          statusAtEntry: l.status,
+          roundAttemptCount: l.totalAttempts || 0,
+        })),
+        skipDuplicates: true,
+      });
+      await this.prisma.lead.updateMany({
+        where: { id: { in: slice.map((l) => l.id) }, companyId },
+        data: { currentRoundId: round!.id },
+      });
+    }
   }
 }
