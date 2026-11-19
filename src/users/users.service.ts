@@ -102,6 +102,8 @@ export class UsersService {
           status: true,
           dailyTarget: true,
           shareLink: true,
+          panNumber: true,
+          aadhaarNumber: true,
           profileImage: true,
           lastLoginAt: true,
           createdAt: true,
@@ -151,6 +153,25 @@ export class UsersService {
     return result;
   }
 
+  private async assertTelecallerKyc(
+    roleId: string,
+    companyId: string,
+    panNumber?: string,
+    aadhaarNumber?: string,
+  ) {
+    const role = await this.prisma.role.findFirst({
+      where: { id: roleId, companyId },
+      select: { name: true },
+    });
+    if (role?.name !== 'TELECALLER') return;
+    if (!panNumber) {
+      throw new BadRequestException('PAN number is required for Telecaller');
+    }
+    if (!aadhaarNumber) {
+      throw new BadRequestException('Aadhaar number is required for Telecaller');
+    }
+  }
+
   async create(createUserDto: CreateUserDto, companyId: string, performedById?: string) {
     const employeeId =
       createUserDto.employeeId?.trim() || (await this.nextEmployeeId(companyId));
@@ -171,6 +192,13 @@ export class UsersService {
       throw new ConflictException('A user with this employee ID already exists');
     }
 
+    await this.assertTelecallerKyc(
+      createUserDto.roleId,
+      companyId,
+      createUserDto.panNumber,
+      createUserDto.aadhaarNumber,
+    );
+
     const sendInvitation = createUserDto.sendInvitation !== false && !createUserDto.password;
     const rawPassword = createUserDto.password || randomBytes(32).toString('hex');
     const hashedPassword = await bcrypt.hash(rawPassword, 10);
@@ -184,6 +212,8 @@ export class UsersService {
         password: hashedPassword,
         companyId,
         dailyTarget: createUserDto.dailyTarget || 100,
+        panNumber: createUserDto.panNumber || null,
+        aadhaarNumber: createUserDto.aadhaarNumber || null,
       },
       include: {
         role: { select: { id: true, name: true, displayName: true } },
@@ -328,6 +358,14 @@ export class UsersService {
     if (!existing) {
       throw new NotFoundException('User not found');
     }
+
+    const nextRoleId = updateUserDto.roleId || existing.roleId;
+    await this.assertTelecallerKyc(
+      nextRoleId,
+      companyId,
+      updateUserDto.panNumber ?? existing.panNumber ?? undefined,
+      updateUserDto.aadhaarNumber ?? existing.aadhaarNumber ?? undefined,
+    );
 
     const data: any = { ...updateUserDto };
 

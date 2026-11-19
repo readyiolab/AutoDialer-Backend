@@ -334,6 +334,8 @@ model User {
   profileImage       String?
   dailyTarget        Int        @default(100)
   shareLink          String?
+  panNumber          String?
+  aadhaarNumber      String?
   fcmToken           String?
   mustChangePassword Boolean    @default(false)
   lastLoginAt        DateTime?

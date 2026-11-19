@@ -7,6 +7,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { ensureSystemRoles } from '../src/common/utils/ensure-system-roles';
 
 const prisma = new PrismaClient();
 
@@ -39,24 +40,14 @@ async function main() {
     console.log(`Reactivated company ${code} (was ${prev})`);
   }
 
-  let role = await prisma.role.findFirst({
+  await ensureSystemRoles(prisma, company.id);
+  console.log(`Ensured system roles for company ${code}`);
+
+  const role = await prisma.role.findFirst({
     where: { name: 'SUPER_ADMIN', companyId: company.id },
   });
   if (!role) {
-    role = await prisma.role.create({
-      data: {
-        name: 'SUPER_ADMIN',
-        displayName: 'Super Admin',
-        permissions: ['*'],
-        isSystem: true,
-        companyId: company.id,
-      },
-    });
-  } else {
-    await prisma.role.update({
-      where: { id: role.id },
-      data: { permissions: ['*'] },
-    });
+    throw new Error('SUPER_ADMIN role missing after ensureSystemRoles');
   }
 
   const passwordHash = await bcrypt.hash(password, 10);

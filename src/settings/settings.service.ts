@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { clampListLimit } from '../common/utils/pagination';
+import { ensureSystemRoles } from '../common/utils/ensure-system-roles';
 import {
   CreateDispositionDto,
   UpdateCallingRulesDto,
@@ -52,9 +53,11 @@ export class SettingsService {
   }
 
   async getRoles(companyId: string) {
+    await ensureSystemRoles(this.prisma, companyId);
     return this.prisma.role.findMany({
       where: { companyId },
       take: clampListLimit(),
+      orderBy: { displayName: 'asc' },
       include: { _count: { select: { users: true } } },
     });
   }

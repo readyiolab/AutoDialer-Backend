@@ -104,6 +104,31 @@ npm ci && npm run build
 sudo rsync -a --delete dist/ /var/www/autodialer/
 ```
 
+## Update: roles + telecaller PAN/Aadhaar
+
+After pulling code that adds `ensureSystemRoles` and User `panNumber`/`aadhaarNumber`:
+
+```bash
+# API
+cd /opt/autodialer   # or /var/www/AutoDialer if that is where you cloned
+git pull
+npm ci
+npx prisma migrate deploy
+npm run build
+npm run db:bootstrap-arun   # ensures TELECALLER etc. on ADEMO
+pm2 restart autodialer-api
+
+# Frontend (rebuild static)
+cd /tmp
+rm -rf autodialer-frontend
+git clone https://github.com/readyiolab/AutoDialer-Frontend.git autodialer-frontend
+cd autodialer-frontend
+npm ci && npm run build
+sudo rsync -a --delete dist/ /var/www/autodialer/
+```
+
+Then open Add Employee — roles should list Telecaller (not only Super Admin), and selecting Telecaller shows required PAN/Aadhaar.
+
 ## 6. Smoke test
 
 1. `curl -sS https://autodialerapi.lendigomicrocare.com/api/health`

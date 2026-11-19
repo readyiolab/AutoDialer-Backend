@@ -10,6 +10,7 @@ import {
   Matches,
   IsBoolean,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateUserDto {
@@ -78,6 +79,28 @@ export class CreateUserDto {
   @IsOptional()
   @IsString()
   shareLink?: string;
+
+  @ApiPropertyOptional({ example: 'ABCDE1234F', description: 'Required for TELECALLER' })
+  @IsOptional()
+  @Transform(({ value }) =>
+    value == null || String(value).trim() === ''
+      ? undefined
+      : String(value).trim().toUpperCase(),
+  )
+  @Matches(/^[A-Z]{5}[0-9]{4}[A-Z]$/, {
+    message: 'PAN must be 10 characters like ABCDE1234F',
+  })
+  panNumber?: string;
+
+  @ApiPropertyOptional({ example: '123456789012', description: 'Required for TELECALLER' })
+  @IsOptional()
+  @Transform(({ value }) =>
+    value == null || String(value).trim() === ''
+      ? undefined
+      : String(value).replace(/\D/g, ''),
+  )
+  @Matches(/^\d{12}$/, { message: 'Aadhaar must be a 12-digit number' })
+  aadhaarNumber?: string;
 
   @ApiPropertyOptional({ description: 'Send invitation email instead of setting password' })
   @IsOptional()
