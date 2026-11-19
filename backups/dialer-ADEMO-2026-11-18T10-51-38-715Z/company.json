@@ -1,0 +1,17 @@
+{
+  "id": "9173c180-e71c-4e54-8597-0ed2d78b0617",
+  "name": "AutoDial Financial Services Ltd.",
+  "code": "ADEMO",
+  "contactName": "Aditya Sharma",
+  "address": "Cyber City, Phase 2, Gurugram, Haryana",
+  "phone": "9999999999",
+  "email": "admin@autodialpro.in",
+  "logo": null,
+  "settings": {},
+  "subscription": {},
+  "status": "ACTIVE",
+  "isActive": true,
+  "accountManagerId": null,
+  "createdAt": "2026-11-17T13:12:32.601Z",
+  "updatedAt": "2026-11-17T16:44:58.676Z"
+}

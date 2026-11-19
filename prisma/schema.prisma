@@ -1,0 +1,991 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== ENUMS ====================
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+enum CompanyStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum DeviceStatus {
+  ACTIVE
+  REVOKED
+  BLOCKED
+}
+
+enum LeadStatus {
+  NEW
+  ASSIGNED
+  PENDING
+  NOT_CONTACTED
+  CONTACTED
+  INTERESTED
+  NOT_INTERESTED
+  FOLLOW_UP_REQUIRED
+  CALL_BACK
+  BUSY
+  NO_ANSWER
+  SWITCHED_OFF
+  INVALID_NUMBER
+  CONVERTED
+  LOST
+  CLOSED
+  DND
+  DOCUMENTS_REQUIRED
+  APPLICATION_SUBMITTED
+  PAYMENT_PROMISED
+  LOAN_REQUIRED
+}
+
+enum LeadPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum CallDisposition {
+  INTERESTED
+  NOT_INTERESTED
+  CALL_BACK
+  WRONG_NUMBER
+  NUMBER_BELONGS_TO_SOMEONE_ELSE
+  LANGUAGE_BARRIER
+  ALREADY_TAKEN_LOAN
+  LOAN_REQUIRED
+  DOCUMENTS_REQUIRED
+  APPLICATION_SUBMITTED
+  PAYMENT_PROMISED
+  NOT_PICKED
+  BUSY
+  SWITCHED_OFF
+  NOT_REACHABLE
+  CALL_DECLINED
+  NETWORK_ERROR
+  FAILED
+  DND
+  DUPLICATE_LEAD
+}
+
+enum CallCategory {
+  CONNECTED
+  UNANSWERED
+  OTHER
+}
+
+enum FollowUpStatus {
+  PENDING
+  COMPLETED
+  OVERDUE
+  MISSED
+  REASSIGNED
+}
+
+enum MessageType {
+  WHATSAPP
+  SMS
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum ImportStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum LeadSource {
+  EXCEL_UPLOAD
+  OCR_UPLOAD
+  MANUAL
+  WEBSITE
+  FACEBOOK
+  GOOGLE
+  REFERRAL
+  OTHER
+}
+
+enum AllocationMethod {
+  EQUAL
+  ROUND_ROBIN
+  CAPACITY_BASED
+  MANUAL
+  PRIORITY_BASED
+  PERFORMANCE
+  AVAILABILITY
+  WORKLOAD
+  TEAM
+  HYBRID
+}
+
+enum LoanTrackingStatus {
+  INTERESTED
+  APPLICATION
+  LOGIN
+  APPROVED
+  REJECTED
+  DISBURSED
+}
+
+enum DialMode {
+  MANUAL
+  PREVIEW
+  PROGRESSIVE
+  POWER
+  PREDICTIVE
+}
+
+enum DialSessionStatus {
+  RUNNING
+  PAUSED
+  ENDED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+// ==================== MODELS ====================
+
+model Company {
+  id               String        @id @default(uuid())
+  name             String
+  code             String        @unique
+  contactName      String?
+  address          String?
+  phone            String?
+  email            String?
+  logo             String?
+  settings         Json?         @default("{}")
+  subscription     Json?         @default("{}")
+  status           CompanyStatus @default(ACTIVE)
+  isActive         Boolean       @default(true)
+  accountManagerId String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  accountManager       User?                   @relation("CompanyAccountManager", fields: [accountManagerId], references: [id])
+  users                User[]                  @relation("CompanyUsers")
+  roles                Role[]
+  branches             Branch[]
+  departments          Department[]
+  teams                Team[]
+  leads                Lead[]
+  campaigns            Campaign[]
+  callRecords          CallRecord[]
+  followUps            FollowUp[]
+  messageTemplates     MessageTemplate[]
+  communicationLogs    CommunicationLog[]
+  importHistories      ImportHistory[]
+  attendanceLogs       AttendanceLog[]
+  auditLogs            AuditLog[]
+  callingRules         CallingRule[]
+  dispositionMasters   DispositionMaster[]
+  notificationSettings NotificationSetting[]
+  leadStatusDefinitions LeadStatusDefinition[]
+  allocationBatches    AllocationBatch[]
+  dialSessions         DialSession[]
+  notifications        Notification[]
+  permissions          Permission[]
+  leadAssignments      LeadAssignmentHistory[]
+  automationRules      AutomationRule[]
+  userDevices          UserDevice[]
+  refreshTokens        RefreshToken[]
+
+  @@map("companies")
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  key         String
+  displayName String
+  module      String
+  description String?
+  companyId   String?
+  createdAt   DateTime @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@unique([key, companyId])
+  @@map("permissions")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String
+  displayName String
+  permissions Json     @default("[]")
+  isSystem    Boolean  @default(false)
+  companyId   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company              Company               @relation(fields: [companyId], references: [id])
+  users                User[]
+  notificationSettings NotificationSetting[]
+
+  @@unique([name, companyId])
+  @@map("roles")
+}
+
+model Branch {
+  id        String   @id @default(uuid())
+  name      String
+  code      String
+  state     String?
+  city      String?
+  address   String?
+  isActive  Boolean  @default(true)
+  companyId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  users   User[]
+
+  @@unique([code, companyId])
+  @@map("branches")
+}
+
+model Department {
+  id        String   @id @default(uuid())
+  name      String
+  companyId String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  users   User[]
+
+  @@unique([name, companyId])
+  @@map("departments")
+}
+
+model Team {
+  id        String   @id @default(uuid())
+  name      String
+  companyId String
+  managerId String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  manager User?   @relation("TeamManager", fields: [managerId], references: [id])
+  users   User[]  @relation("TeamMembers")
+
+  @@unique([name, companyId])
+  @@map("teams")
+}
+
+model User {
+  id                 String     @id @default(uuid())
+  employeeId         String
+  name               String
+  email              String?
+  phone              String     @unique
+  password           String
+  roleId             String
+  branchId           String?
+  departmentId       String?
+  teamId             String?
+  reportingManagerId String?
+  companyId          String
+  deviceId           String?
+  status             UserStatus @default(ACTIVE)
+  isPlatformAdmin    Boolean    @default(false)
+  profileImage       String?
+  dailyTarget        Int        @default(100)
+  shareLink          String?
+  fcmToken           String?
+  mustChangePassword Boolean    @default(false)
+  lastLoginAt        DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  company          Company     @relation("CompanyUsers", fields: [companyId], references: [id])
+  role             Role        @relation(fields: [roleId], references: [id])
+  branch           Branch?     @relation(fields: [branchId], references: [id])
+  department       Department? @relation(fields: [departmentId], references: [id])
+  team             Team?       @relation("TeamMembers", fields: [teamId], references: [id])
+  reportingManager User?       @relation("ReportingHierarchy", fields: [reportingManagerId], references: [id])
+  subordinates     User[]      @relation("ReportingHierarchy")
+  managedTeams     Team[]      @relation("TeamManager")
+  managedCompanies Company[]   @relation("CompanyAccountManager")
+
+  assignedLeads       Lead[]               @relation("AssignedLeads")
+  callRecords         CallRecord[]
+  followUps           FollowUp[]           @relation("UserFollowUps")
+  reassignedFollowUps FollowUp[]           @relation("ReassignedFollowUps")
+  escalatedFollowUps  FollowUp[]           @relation("EscalatedFollowUps")
+  communicationLogs   CommunicationLog[]
+  importHistories     ImportHistory[]
+  attendanceLogs      AttendanceLog[]
+  sessionLogs         SessionLog[]
+  auditLogs           AuditLog[]
+  leadStatusChanges   LeadStatusHistory[]
+  campaignAssignments CampaignAssignment[]
+  invitations         Invitation[]
+  allocationBatches   AllocationBatch[]
+  dialSessions        DialSession[]
+  notifications       Notification[]
+  assignmentsFrom     LeadAssignmentHistory[] @relation("AssignmentFrom")
+  assignmentsTo       LeadAssignmentHistory[] @relation("AssignmentTo")
+  assignmentsPerformed LeadAssignmentHistory[] @relation("AssignmentPerformedBy")
+  userDevices         UserDevice[]
+  refreshTokens       RefreshToken[]
+
+  @@unique([employeeId, companyId])
+  @@index([companyId, status])
+  @@map("users")
+}
+
+model Invitation {
+  id           String           @id @default(uuid())
+  userId       String
+  tokenHash    String
+  email        String
+  expiresAt    DateTime
+  usedAt       DateTime?
+  status       InvitationStatus @default(PENDING)
+  emailSentAt  DateTime?
+  emailFailed  Boolean          @default(false)
+  emailError   String?
+  createdAt    DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([tokenHash])
+  @@index([userId, status])
+  @@map("invitations")
+}
+
+model Lead {
+  id                 String       @id @default(uuid())
+  customerName       String
+  mobileNumber       String       @unique
+  alternateMobile    String?
+  email              String?
+  panNumber          String?
+  aadhaarNumber      String?
+  city               String?
+  state              String?
+  address            String?
+  loanAmount         Decimal?     @db.Decimal(12, 2)
+  loanId             String?
+  outstandingAmount  Decimal?     @db.Decimal(12, 2)
+  dueDate            DateTime?
+  dpd                Int?
+  employer           String?
+  product            String?
+  leadBranch         String?
+  source             LeadSource   @default(MANUAL)
+  customFields       Json?        @default("{}")
+  status             LeadStatus   @default(NEW)
+  priority           LeadPriority @default(MEDIUM)
+  score              Int          @default(0)
+  tags               Json         @default("[]")
+  assignedToId       String?
+  campaignId         String?
+  companyId          String
+  isBlacklisted      Boolean      @default(false)
+  consentGiven       Boolean      @default(false)
+  consentDate        DateTime?
+  lastContactedAt    DateTime?
+  nextFollowUpAt     DateTime?
+  totalAttempts      Int          @default(0)
+  connectedCalls     Int          @default(0)
+  loanTrackingStatus LoanTrackingStatus?
+  ptpDate            DateTime?
+  ptpAmount          Decimal?     @db.Decimal(12, 2)
+  importHistoryId    String?
+  allocationBatchId  String?
+  needsReview        Boolean      @default(false)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  company           Company                 @relation(fields: [companyId], references: [id])
+  assignedTo        User?                   @relation("AssignedLeads", fields: [assignedToId], references: [id])
+  campaign          Campaign?               @relation(fields: [campaignId], references: [id])
+  importHistory     ImportHistory?          @relation(fields: [importHistoryId], references: [id])
+  allocationBatch   AllocationBatch?        @relation(fields: [allocationBatchId], references: [id])
+  callRecords       CallRecord[]
+  followUps         FollowUp[]
+  statusHistory     LeadStatusHistory[]
+  communicationLogs CommunicationLog[]
+  dialSessions      DialSession[]
+  assignmentHistory LeadAssignmentHistory[]
+
+  @@index([mobileNumber])
+  @@index([companyId, mobileNumber])
+  @@index([status, companyId])
+  @@index([assignedToId, status])
+  @@index([assignedToId, companyId, status])
+  @@index([campaignId, status])
+  @@index([companyId, createdAt])
+  @@index([companyId, needsReview])
+  @@map("leads")
+}
+
+model LeadAssignmentHistory {
+  id           String   @id @default(uuid())
+  leadId       String
+  companyId    String
+  fromUserId   String?
+  toUserId     String?
+  assignedById String
+  reason       String?
+  remarks      String?
+  source       String   @default("MANUAL") // ALLOCATE | TRANSFER | REASSIGN | SYSTEM
+  createdAt    DateTime @default(now())
+
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  company    Company  @relation(fields: [companyId], references: [id])
+  fromUser   User?    @relation("AssignmentFrom", fields: [fromUserId], references: [id])
+  toUser     User?    @relation("AssignmentTo", fields: [toUserId], references: [id])
+  assignedBy User     @relation("AssignmentPerformedBy", fields: [assignedById], references: [id])
+
+  @@index([leadId, createdAt])
+  @@index([companyId, createdAt])
+  @@index([toUserId, createdAt])
+  @@map("lead_assignment_history")
+}
+
+model AutomationRule {
+  id          String   @id @default(uuid())
+  companyId   String
+  name        String
+  code        String
+  description String?
+  condition   Json
+  action      Json
+  isActive    Boolean  @default(true)
+  priority    Int      @default(100)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, code])
+  @@index([companyId, isActive])
+  @@map("automation_rules")
+}
+
+model LeadStatusHistory {
+  id          String   @id @default(uuid())
+  leadId      String
+  fromStatus  String?
+  toStatus    String
+  changedById String
+  remarks     String?
+  callId      String?
+  createdAt   DateTime @default(now())
+
+  lead      Lead @relation(fields: [leadId], references: [id])
+  changedBy User @relation(fields: [changedById], references: [id])
+
+  @@index([leadId, createdAt])
+  @@map("lead_status_history")
+}
+
+model LeadStatusDefinition {
+  id               String     @id @default(uuid())
+  companyId        String
+  code             LeadStatus
+  label            String
+  isDialable       Boolean    @default(true)
+  allowedNextCodes Json       @default("[]")
+  isSystem         Boolean    @default(true)
+  isActive         Boolean    @default(true)
+  displayOrder     Int        @default(0)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, code])
+  @@map("lead_status_definitions")
+}
+
+model Campaign {
+  id                 String           @id @default(uuid())
+  name               String
+  description        String?
+  type               String?
+  startDate          DateTime?
+  endDate            DateTime?
+  status             CampaignStatus   @default(DRAFT)
+  dialMode           DialMode         @default(PROGRESSIVE)
+  allocationMethod   AllocationMethod @default(EQUAL)
+  allocationRules    Json?            @default("{}")
+  maxAttemptsPerLead Int              @default(5)
+  callingHoursStart  String?          @default("09:00")
+  callingHoursEnd    String?          @default("18:00")
+  retryInterval      Int              @default(30)
+  dailyTarget        Int              @default(100)
+  companyId          String
+  createdById        String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  company           Company              @relation(fields: [companyId], references: [id])
+  leads             Lead[]
+  callRecords       CallRecord[]
+  followUps         FollowUp[]
+  importHistories   ImportHistory[]
+  assignments       CampaignAssignment[]
+  allocationBatches AllocationBatch[]
+  dialSessions      DialSession[]
+
+  @@index([companyId, status])
+  @@map("campaigns")
+}
+
+model CampaignAssignment {
+  id             String   @id @default(uuid())
+  campaignId     String
+  userId         String
+  leadsAssigned  Int      @default(0)
+  leadsCompleted Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@unique([campaignId, userId])
+  @@map("campaign_assignments")
+}
+
+model AllocationBatch {
+  id           String           @id @default(uuid())
+  companyId    String
+  campaignId   String?
+  method       AllocationMethod
+  ruleSnapshot Json?            @default("{}")
+  totalLeads   Int              @default(0)
+  allocated    Int              @default(0)
+  performedById String
+  createdAt    DateTime         @default(now())
+
+  company     Company   @relation(fields: [companyId], references: [id])
+  campaign    Campaign? @relation(fields: [campaignId], references: [id])
+  performedBy User      @relation(fields: [performedById], references: [id])
+  leads       Lead[]
+
+  @@index([companyId, createdAt])
+  @@map("allocation_batches")
+}
+
+model CallRecord {
+  id            String           @id @default(uuid())
+  leadId        String
+  userId        String
+  campaignId    String?
+  companyId     String
+  startTime     DateTime
+  endTime       DateTime?
+  duration      Int              @default(0)
+  rawCallState  String?
+  disposition   CallDisposition?
+  category      CallCategory?
+  remarks       String?
+  followUpDate  DateTime?
+  followUpTime  String?
+  priority      LeadPriority?
+  attemptNumber Int              @default(1)
+  voiceNoteUrl  String?
+  dialSessionId String?
+  createdAt     DateTime         @default(now())
+
+  lead        Lead         @relation(fields: [leadId], references: [id])
+  user        User         @relation(fields: [userId], references: [id])
+  campaign    Campaign?    @relation(fields: [campaignId], references: [id])
+  company     Company      @relation(fields: [companyId], references: [id])
+  dialSession DialSession? @relation(fields: [dialSessionId], references: [id])
+  followUp    FollowUp?
+
+  @@index([userId, createdAt])
+  @@index([leadId, createdAt])
+  @@index([companyId, createdAt])
+  @@map("call_records")
+}
+
+model DialSession {
+  id                  String            @id @default(uuid())
+  userId              String
+  companyId           String
+  campaignId          String?
+  mode                DialMode          @default(PROGRESSIVE)
+  status              DialSessionStatus @default(RUNNING)
+  currentLeadId       String?
+  completedCount      Int               @default(0)
+  lastCompletedLeadId String?
+  pausedAt            DateTime?
+  startedAt           DateTime          @default(now())
+  endedAt             DateTime?
+  updatedAt           DateTime          @updatedAt
+
+  user        User               @relation(fields: [userId], references: [id])
+  company     Company            @relation(fields: [companyId], references: [id])
+  campaign    Campaign?          @relation(fields: [campaignId], references: [id])
+  currentLead Lead?              @relation(fields: [currentLeadId], references: [id])
+  callRecords CallRecord[]
+  events      DialSessionEvent[]
+
+  @@index([userId, status])
+  @@index([companyId, status])
+  @@index([userId, campaignId, status])
+  @@map("dial_sessions")
+}
+
+model DialSessionEvent {
+  id             String   @id @default(uuid())
+  sessionId      String
+  idempotencyKey String
+  eventType      String
+  responseJson   Json?
+  createdAt      DateTime @default(now())
+
+  session DialSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, idempotencyKey])
+  @@index([sessionId, createdAt])
+  @@map("dial_session_events")
+}
+
+model DispositionMaster {
+  id           String   @id @default(uuid())
+  name         String
+  category     String
+  isActive     Boolean  @default(true)
+  displayOrder Int      @default(0)
+  companyId    String
+  createdAt    DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([name, companyId])
+  @@map("disposition_masters")
+}
+
+model FollowUp {
+  id             String         @id @default(uuid())
+  leadId         String
+  userId         String
+  campaignId     String?
+  callRecordId   String?        @unique
+  scheduledDate  DateTime
+  scheduledTime  String?
+  status         FollowUpStatus @default(PENDING)
+  completedAt    DateTime?
+  reassignedToId String?
+  escalatedToId  String?
+  remarks        String?
+  companyId      String
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  lead         Lead        @relation(fields: [leadId], references: [id])
+  user         User        @relation("UserFollowUps", fields: [userId], references: [id])
+  campaign     Campaign?   @relation(fields: [campaignId], references: [id])
+  callRecord   CallRecord? @relation(fields: [callRecordId], references: [id])
+  reassignedTo User?       @relation("ReassignedFollowUps", fields: [reassignedToId], references: [id])
+  escalatedTo  User?       @relation("EscalatedFollowUps", fields: [escalatedToId], references: [id])
+  company      Company     @relation(fields: [companyId], references: [id])
+
+  @@index([userId, scheduledDate])
+  @@index([status, scheduledDate])
+  @@index([companyId, status, scheduledDate])
+  @@index([campaignId, status, scheduledDate])
+  @@map("follow_ups")
+}
+
+model MessageTemplate {
+  id         String      @id @default(uuid())
+  name       String
+  type       MessageType
+  category   String?
+  language   String      @default("en")
+  content    String
+  variables  Json        @default("[]")
+  isApproved Boolean     @default(false)
+  companyId  String
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  company           Company            @relation(fields: [companyId], references: [id])
+  communicationLogs CommunicationLog[]
+
+  @@unique([name, companyId])
+  @@map("message_templates")
+}
+
+model CommunicationLog {
+  id           String        @id @default(uuid())
+  leadId       String
+  userId       String
+  type         MessageType
+  templateId   String?
+  content      String
+  status       MessageStatus @default(QUEUED)
+  sentAt       DateTime?
+  deliveredAt  DateTime?
+  readAt       DateTime?
+  failedReason String?
+  companyId    String
+  createdAt    DateTime      @default(now())
+
+  lead     Lead             @relation(fields: [leadId], references: [id])
+  user     User             @relation(fields: [userId], references: [id])
+  template MessageTemplate? @relation(fields: [templateId], references: [id])
+  company  Company          @relation(fields: [companyId], references: [id])
+
+  @@index([leadId, createdAt])
+  @@index([companyId, createdAt])
+  @@map("communication_logs")
+}
+
+model ImportHistory {
+  id               String       @id @default(uuid())
+  fileName         String
+  fileType         String
+  fileHash         String?
+  filePath         String?
+  columnMapping    Json?
+  stagedRows       Json?
+  totalRecords     Int          @default(0)
+  importedRecords  Int          @default(0)
+  duplicateRecords Int          @default(0)
+  rejectedRecords  Int          @default(0)
+  rejectedFileUrl  String?
+  progress         Int          @default(0)
+  status           ImportStatus @default(PROCESSING)
+  uploadedById     String
+  campaignId       String?
+  companyId        String
+  createdAt        DateTime     @default(now())
+  completedAt      DateTime?
+
+  company  Company   @relation(fields: [companyId], references: [id])
+  user     User      @relation(fields: [uploadedById], references: [id])
+  campaign Campaign? @relation(fields: [campaignId], references: [id])
+  leads    Lead[]
+
+  @@index([companyId, createdAt])
+  @@index([companyId, fileHash])
+  @@index([campaignId])
+  @@map("import_histories")
+}
+
+model AttendanceLog {
+  id            String    @id @default(uuid())
+  userId        String
+  loginTime     DateTime
+  logoutTime    DateTime?
+  totalDuration Int?
+  breakDuration Int       @default(0)
+  companyId     String
+  date          DateTime  @db.Date
+  createdAt     DateTime  @default(now())
+
+  user    User       @relation(fields: [userId], references: [id])
+  company Company    @relation(fields: [companyId], references: [id])
+  breaks  BreakLog[]
+
+  @@index([companyId, date])
+  @@map("attendance_logs")
+}
+
+model BreakLog {
+  id           String    @id @default(uuid())
+  attendanceId String
+  startTime    DateTime
+  endTime      DateTime?
+  duration     Int?
+  reason       String?
+  createdAt    DateTime  @default(now())
+
+  attendance AttendanceLog @relation(fields: [attendanceId], references: [id])
+
+  @@map("break_logs")
+}
+
+model SessionLog {
+  id        String    @id @default(uuid())
+  userId    String
+  deviceId  String?
+  token     String
+  ipAddress String?
+  isActive  Boolean   @default(true)
+  loginAt   DateTime  @default(now())
+  logoutAt  DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, isActive])
+  @@index([token])
+  @@map("session_logs")
+}
+
+model UserDevice {
+  id             String       @id @default(uuid())
+  userId         String
+  companyId      String
+  deviceId       String
+  publicKey      String?
+  model          String?
+  androidVersion String?
+  appVersion     String?
+  riskFlags      Json?        @default("[]")
+  status         DeviceStatus @default(ACTIVE)
+  registeredAt   DateTime     @default(now())
+  lastActiveAt   DateTime     @default(now())
+  lastAuthAt     DateTime     @default(now())
+  revokedAt      DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([deviceId])
+  @@index([userId, status])
+  @@index([companyId, status])
+  @@map("user_devices")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  companyId String
+  deviceId  String?
+  sessionId String?
+  tokenHash String    @unique
+  familyId  String
+  expiresAt DateTime
+  rotatedAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user    User    @relation(fields: [userId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  oldValues Json?
+  newValues Json?
+  ipAddress String?
+  companyId String
+  createdAt DateTime @default(now())
+
+  user    User?   @relation(fields: [userId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, createdAt])
+  @@index([companyId, entity, createdAt])
+  @@index([companyId, action, createdAt])
+  @@map("audit_logs")
+}
+
+model CallingRule {
+  id                   String   @id @default(uuid())
+  name                 String
+  minGapBetweenCalls   Int      @default(5)
+  maxRetriesPerDay     Int      @default(3)
+  maxTotalRetries      Int      @default(10)
+  restrictedHoursStart String?
+  restrictedHoursEnd   String?
+  waitTimeBetweenCalls Int      @default(5)
+  companyId            String
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@map("calling_rules")
+}
+
+model NotificationSetting {
+  id              String   @id @default(uuid())
+  type            String
+  recipientRoleId String?
+  isEnabled       Boolean  @default(true)
+  schedule        String?
+  companyId       String
+  createdAt       DateTime @default(now())
+
+  company       Company @relation(fields: [companyId], references: [id])
+  recipientRole Role?   @relation(fields: [recipientRoleId], references: [id])
+
+  @@map("notification_settings")
+}
+
+model Notification {
+  id        String              @id @default(uuid())
+  userId    String
+  companyId String
+  title     String
+  body      String
+  type      String
+  channel   NotificationChannel @default(IN_APP)
+  isRead    Boolean             @default(false)
+  metadata  Json?               @default("{}")
+  createdAt DateTime            @default(now())
+  readAt    DateTime?
+
+  user    User    @relation(fields: [userId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([userId, isRead, createdAt])
+  @@index([companyId, createdAt])
+  @@map("notifications")
+}
