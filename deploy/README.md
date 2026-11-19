@@ -104,6 +104,19 @@ npm ci && npm run build
 sudo rsync -a --delete dist/ /var/www/autodialer/
 ```
 
+## Update: faster mobile today/lists
+
+```bash
+cd /opt/autodialer   # or your API clone path
+git pull
+npm ci
+npx prisma migrate deploy
+npm run build
+pm2 restart autodialer-api
+```
+
+Then share Android `AutoDialPro-2.2.3.apk` (uninstall old app first if needed).
+
 ## Update: roles + telecaller PAN/Aadhaar
 
 After pulling code that adds `ensureSystemRoles` and User `panNumber`/`aadhaarNumber`:
