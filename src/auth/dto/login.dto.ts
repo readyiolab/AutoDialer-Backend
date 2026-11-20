@@ -1,4 +1,5 @@
-import { IsNotEmpty, IsString, IsOptional, IsIn, IsArray } from 'class-validator';
+import { IsNotEmpty, IsString, IsOptional, IsIn, IsArray, IsBoolean } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class LoginDto {
@@ -21,6 +22,15 @@ export class LoginDto {
   @IsOptional()
   @IsString()
   deviceId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Android only: after valid password, revoke previous ACTIVE device and bind this deviceId',
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === 1 || value === '1')
+  @IsBoolean()
+  forceReplaceDevice?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()

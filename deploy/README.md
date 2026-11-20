@@ -159,6 +159,18 @@ sudo rsync -a --delete dist/ /var/www/autodialer/
 
 Then open Add Employee — roles should list Telecaller (not only Super Admin), and selecting Telecaller shows required PAN/Aadhaar.
 
+## Update: Android device self-authorize (API + APK 2.2.5)
+
+```bash
+cd /var/www/AutoDialer
+git pull
+npm ci
+npm run build
+pm2 restart autodialer-api
+```
+
+Share `AutoDialPro-2.2.5.apk`. On “already registered on another device”, telecaller taps **Authorize this device** (or admin uses Employee Devices → Replace).
+
 ## Update: Lead Allocation how-many + bulk distribute
 
 Needs **API + frontend** (new allocate `limit` field).

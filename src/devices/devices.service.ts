@@ -25,29 +25,55 @@ export class DevicesService {
   ) {}
 
   /**
-   * Android one-device policy: bind on first login, deny other devices until admin reset.
+   * Android one-device policy: bind on first login, deny other devices until admin reset
+   * (or telecaller self-authorize via forceReplace after password check).
    */
-  async assertAndBindAndroidDevice(userId: string, companyId: string, meta: DeviceMeta) {
+  async assertAndBindAndroidDevice(
+    userId: string,
+    companyId: string,
+    meta: DeviceMeta,
+    opts?: { forceReplace?: boolean },
+  ) {
     if (!meta.deviceId?.trim()) {
       throw new BadRequestException('deviceId is required for Android login');
     }
 
-    const active = await this.prisma.userDevice.findFirst({
+    let active = await this.prisma.userDevice.findFirst({
       where: { userId, status: 'ACTIVE' },
     });
 
     if (active && active.deviceId !== meta.deviceId) {
-      await this.audit.logAction({
-        userId,
-        action: 'LOGIN_DENIED_DEVICE',
-        entity: 'UserDevice',
-        entityId: active.id,
-        companyId,
-        newValues: { attemptedDeviceId: meta.deviceId, boundDeviceId: active.deviceId },
-      });
-      throw new ForbiddenException(
-        'This account is already registered on another device. Please contact your administrator to authorize a new device.',
-      );
+      if (opts?.forceReplace) {
+        const previousId = active.deviceId;
+        const allActive = await this.prisma.userDevice.findMany({
+          where: { userId, companyId, status: 'ACTIVE' },
+        });
+        for (const d of allActive) {
+          await this.revoke(d.id, companyId, userId);
+        }
+        await this.revokeUserSessions(userId);
+        await this.audit.logAction({
+          userId,
+          action: 'DEVICE_SELF_REPLACE',
+          entity: 'UserDevice',
+          entityId: active.id,
+          companyId,
+          newValues: { previousDeviceId: previousId, newDeviceId: meta.deviceId },
+        });
+        active = null;
+      } else {
+        await this.audit.logAction({
+          userId,
+          action: 'LOGIN_DENIED_DEVICE',
+          entity: 'UserDevice',
+          entityId: active.id,
+          companyId,
+          newValues: { attemptedDeviceId: meta.deviceId, boundDeviceId: active.deviceId },
+        });
+        throw new ForbiddenException(
+          'This account is already registered on another device. Please contact your administrator to authorize a new device.',
+        );
+      }
     }
 
     const now = new Date();

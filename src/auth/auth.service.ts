@@ -177,14 +177,19 @@ export class AuthService {
 
     let boundDeviceId: string | null = loginDto.deviceId || null;
     if (clientType === 'android') {
-      const device = await this.devices.assertAndBindAndroidDevice(user.id, user.companyId, {
-        deviceId: loginDto.deviceId || '',
-        publicKey: loginDto.publicKey,
-        model: loginDto.model,
-        androidVersion: loginDto.androidVersion,
-        appVersion: loginDto.appVersion,
-        riskFlags: loginDto.riskFlags,
-      });
+      const device = await this.devices.assertAndBindAndroidDevice(
+        user.id,
+        user.companyId,
+        {
+          deviceId: loginDto.deviceId || '',
+          publicKey: loginDto.publicKey,
+          model: loginDto.model,
+          androidVersion: loginDto.androidVersion,
+          appVersion: loginDto.appVersion,
+          riskFlags: loginDto.riskFlags,
+        },
+        { forceReplace: !!loginDto.forceReplaceDevice },
+      );
       boundDeviceId = device.deviceId;
     }
 
