@@ -618,12 +618,41 @@ export class DialerService {
     };
   }
 
+  /** Calling windows are India business hours; EC2 is usually UTC. */
+  private static readonly CALLING_TIMEZONE =
+    process.env.CALLING_TIMEZONE?.trim() || 'Asia/Kolkata';
+
+  /** Current HH:mm in the calling timezone (default Asia/Kolkata). */
+  private nowTimeHm(timeZone = DialerService.CALLING_TIMEZONE): string {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const hour = parts.find((p) => p.type === 'hour')?.value ?? '00';
+    const minute = parts.find((p) => p.type === 'minute')?.value ?? '00';
+    return `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+  }
+
+  /** Normalize "9:00" / "09:00:00" → "09:00" for string compare. */
+  private normalizeHm(value: string): string {
+    const m = String(value || '')
+      .trim()
+      .match(/^(\d{1,2}):(\d{2})/);
+    if (!m) return '00:00';
+    return `${String(Number(m[1])).padStart(2, '0')}:${m[2]}`;
+  }
+
   /** True when current HH:mm falls in [start, end], supporting overnight windows (e.g. 19:00–09:00). */
   private isWithinTimeWindow(timeStr: string, start: string, end: string): boolean {
-    if (start <= end) {
-      return timeStr >= start && timeStr <= end;
+    const t = this.normalizeHm(timeStr);
+    const s = this.normalizeHm(start);
+    const e = this.normalizeHm(end);
+    if (s <= e) {
+      return t >= s && t <= e;
     }
-    return timeStr >= start || timeStr <= end;
+    return t >= s || t <= e;
   }
 
   private async buildSessionPayload(session: any, userId: string, companyId: string) {
@@ -746,8 +775,7 @@ export class DialerService {
       where: { companyId, isActive: true },
     });
 
-    const now = new Date();
-    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const timeStr = this.nowTimeHm();
 
     let campaign = null as any;
     if (effectiveCampaignId) {
