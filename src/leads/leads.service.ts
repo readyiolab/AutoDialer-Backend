@@ -25,7 +25,21 @@ const LEAD_DETAIL_LIMIT = 50;
 
 const FIELD_ALIASES: Record<string, string[]> = {
   customerName: ['Customer Name', 'Name', 'name', 'customer_name', 'Full Name'],
-  mobileNumber: ['Mobile Number', 'mobile', 'phone', 'Mobile', 'Phone Number', 'mobile_number'],
+  mobileNumber: [
+    'Mobile Number',
+    'mobile',
+    'phone',
+    'Mobile',
+    'Phone Number',
+    'mobile_number',
+    'Contact No.',
+    'Contact No',
+    'Contact Number',
+    'contact_no',
+    'Contact',
+    'Phone No.',
+    'Phone No',
+  ],
   email: ['Email', 'email', 'Email Address'],
   panNumber: ['PAN', 'Pan', 'pan', 'PAN Number', 'Pan Number', 'pan_number', 'panNumber'],
   aadhaarNumber: [
