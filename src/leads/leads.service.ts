@@ -385,11 +385,19 @@ export class LeadsService {
       leadWhere.campaignId = dto.campaignId;
     }
 
+    const takeCap = Math.min(
+      10000,
+      dto.leadIds?.length
+        ? dto.leadIds.length
+        : dto.limit && Number(dto.limit) > 0
+          ? Math.floor(Number(dto.limit))
+          : 10000,
+    );
     const leads = await this.prisma.lead.findMany({
       where: leadWhere,
       select: { id: true, priority: true },
       orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-      take: 10000,
+      take: takeCap,
     });
     if (!leads.length) throw new BadRequestException('No leads to allocate');
 

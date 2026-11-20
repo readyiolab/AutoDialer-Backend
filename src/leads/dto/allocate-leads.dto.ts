@@ -71,6 +71,16 @@ export class AllocateLeadsDto {
   @IsObject()
   targetCounts?: Record<string, number>;
 
+  @ApiPropertyOptional({
+    description:
+      'When leadIds omitted, only take the first N unassigned leads (priority then oldest). Caps the pool before EQUAL/ROUND_ROBIN.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  limit?: number;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()

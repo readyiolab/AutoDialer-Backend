@@ -159,6 +159,51 @@ sudo rsync -a --delete dist/ /var/www/autodialer/
 
 Then open Add Employee — roles should list Telecaller (not only Super Admin), and selecting Telecaller shows required PAN/Aadhaar.
 
+## Update: Lead Allocation how-many + bulk distribute
+
+Needs **API + frontend** (new allocate `limit` field).
+
+```bash
+# API
+cd /var/www/AutoDialer
+git pull
+npm ci
+npm run build
+pm2 restart autodialer-api
+
+# Frontend static
+cd /tmp
+rm -rf autodialer-frontend
+git clone https://github.com/readyiolab/AutoDialer-Frontend.git autodialer-frontend
+cd autodialer-frontend
+npm ci && npm run build
+sudo rsync -a --delete dist/ /var/www/autodialer/
+```
+
+On Lead Allocation: use **How many leads** (All / 50 / 100 / …) — no need to tick rows one-by-one. Optional “Pick specific leads” for fine control.
+
+## Update: Lead Allocation roster + unassigned total (frontend only)
+
+No API restart required for roster-only. Rebuild static site after Frontend push:
+
+```bash
+cd /tmp
+rm -rf autodialer-frontend
+git clone https://github.com/readyiolab/AutoDialer-Frontend.git autodialer-frontend
+cd autodialer-frontend
+npm ci && npm run build
+sudo rsync -a --delete dist/ /var/www/autodialer/
+```
+
+### Verify InstantRupiya Loan
+
+1. Open Lead Allocation → select **InstantRupiya Loan**.
+2. Empty campaign team should list company telecallers (e.g. Pooja / Surya / Alok). Check them to assign + select.
+3. Header should show **Unassigned leads (showing X of Y)** with Y ≈ 327 (not capped at 100).
+4. Preview / Allocate Equal with no lead checkboxes → planned total ≈ full unassigned count.
+5. After allocate: dashboard Unassigned drops; Campaign Detail telecallers count &gt; 0.
+6. Campaign Detail add/remove telecallers still works.
+
 ## 6. Smoke test
 
 1. `curl -sS https://autodialerapi.lendigomicrocare.com/api/health`
