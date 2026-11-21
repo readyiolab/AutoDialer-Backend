@@ -416,6 +416,7 @@ export class MobileService {
         shareLink,
         customerName: customerName || leadName,
         campaignName,
+        type: 'WHATSAPP' as any,
       });
 
     const preferred =
