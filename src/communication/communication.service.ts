@@ -1,12 +1,141 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTemplateDto, SendMessageDto } from './dto/communication.dto';
-import { MessageStatus } from '@prisma/client';
+import { MessageStatus, MessageType } from '@prisma/client';
 import { clampPage, clampPageSize, clampListLimit } from '../common/utils/pagination';
+import {
+  renderMessageTemplate,
+  templateCampaignMatchScore,
+  TemplateRenderVars,
+} from './template-render.util';
 
 @Injectable()
 export class CommunicationService {
   constructor(private prisma: PrismaService) {}
+
+  renderTemplate(content: string, vars: TemplateRenderVars) {
+    return renderMessageTemplate(content, vars);
+  }
+
+  /** Brand WhatsApp templates used when sharing UTM on Interested. */
+  static readonly BRAND_SHARE_TEMPLATES: Array<{
+    name: string;
+    category: string;
+    content: string;
+  }> = [
+    {
+      name: 'Lmendigo',
+      category: 'Lmendigo',
+      content: [
+        'Hello! Welcome to Lmendigo.',
+        '',
+        'To apply for a short-term loan, please complete your fresh application using the link below and keep these documents ready:',
+        '',
+        '1. PAN Card',
+        '2. Aadhaar Card',
+        '3. Latest 6 Months Bank Statement',
+        '4. Last 2 Months Salary Slips',
+        '',
+        'Apply Now: {link}',
+        '',
+        'Our team will verify your application and guide you through the next steps.',
+      ].join('\n'),
+    },
+    {
+      name: 'InstantRupiya',
+      category: 'InstantRupiya',
+      content: [
+        'Hello! Welcome to InstantRupiya.',
+        '',
+        'To apply for a short-term loan, please complete your fresh application using the link below and keep these documents ready:',
+        '',
+        '1. PAN Card',
+        '2. Aadhaar Card',
+        '3. Latest 6 Months Bank Statement',
+        '4. Last 2 Months Salary Slips',
+        '',
+        'Apply Now: {link}',
+        '',
+        'Our team will verify your application and guide you through the next steps.',
+      ].join('\n'),
+    },
+  ];
+
+  async ensureBrandShareTemplates(companyId: string) {
+    for (const t of CommunicationService.BRAND_SHARE_TEMPLATES) {
+      await this.prisma.messageTemplate.upsert({
+        where: { name_companyId: { name: t.name, companyId } },
+        update: {},
+        create: {
+          name: t.name,
+          category: t.category,
+          content: t.content,
+          type: MessageType.WHATSAPP,
+          variables: ['customerName', 'link'],
+          isApproved: true,
+          companyId,
+        },
+      });
+    }
+  }
+
+  /**
+   * Approved templates for mobile share, with placeholders filled and optional campaign preference.
+   */
+  async getShareTemplates(opts: {
+    companyId: string;
+    shareLink?: string | null;
+    customerName?: string | null;
+    campaignName?: string | null;
+    type?: MessageType;
+  }) {
+    await this.ensureBrandShareTemplates(opts.companyId);
+
+    const where: any = { companyId: opts.companyId, isApproved: true };
+    if (opts.type) where.type = opts.type;
+
+    const rows = await this.prisma.messageTemplate.findMany({
+      where,
+      take: clampListLimit(),
+      orderBy: [{ category: 'asc' }, { name: 'asc' }],
+      select: {
+        id: true,
+        name: true,
+        category: true,
+        type: true,
+        content: true,
+      },
+    });
+
+    const vars: TemplateRenderVars = {
+      link: opts.shareLink,
+      utm: opts.shareLink,
+      customerName: opts.customerName,
+    };
+
+    const scored = rows.map((row) => ({
+      ...row,
+      content: renderMessageTemplate(row.content, vars),
+      matchScore: templateCampaignMatchScore(
+        opts.campaignName,
+        row.name,
+        row.category,
+      ),
+    }));
+
+    scored.sort((a, b) => {
+      if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
+      return a.name.localeCompare(b.name);
+    });
+
+    const preferredTemplateId =
+      scored.find((t) => t.matchScore > 0)?.id || scored[0]?.id || null;
+
+    return {
+      templates: scored.map(({ matchScore: _s, ...t }) => t),
+      preferredTemplateId,
+    };
+  }
 
   async createTemplate(dto: CreateTemplateDto, companyId: string) {
     return this.prisma.messageTemplate.create({
@@ -43,13 +172,30 @@ export class CommunicationService {
     });
     if (!lead) throw new NotFoundException('Lead not found');
 
+    let content = dto.content;
+    if (dto.templateId && !content?.trim()) {
+      const template = await this.prisma.messageTemplate.findFirst({
+        where: { id: dto.templateId, companyId },
+      });
+      if (template) {
+        const user = await this.prisma.user.findFirst({
+          where: { id: userId, companyId },
+          select: { shareLink: true },
+        });
+        content = renderMessageTemplate(template.content, {
+          link: user?.shareLink,
+          customerName: lead.customerName,
+        });
+      }
+    }
+
     const log = await this.prisma.communicationLog.create({
       data: {
         leadId: dto.leadId,
         userId,
         type: dto.type,
         templateId: dto.templateId,
-        content: dto.content,
+        content,
         status: MessageStatus.DELIVERED,
         sentAt: new Date(),
         deliveredAt: new Date(),

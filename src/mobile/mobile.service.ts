@@ -13,6 +13,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { AuthService } from '../auth/auth.service';
 import { UsersService } from '../users/users.service';
 import { DevicesService, DeviceMeta } from '../devices/devices.service';
+import { CommunicationService } from '../communication/communication.service';
 import { LoginDto } from '../auth/dto/login.dto';
 import { DialMode } from '@prisma/client';
 import { clampPage, clampPageSize } from '../common/utils/pagination';
@@ -29,6 +30,7 @@ export class MobileService {
     private readonly notificationsService: NotificationsService,
     private readonly users: UsersService,
     private readonly devices: DevicesService,
+    private readonly communication: CommunicationService,
   ) {}
 
   async login(dto: LoginDto) {
@@ -387,41 +389,77 @@ export class MobileService {
     if (!user) throw new NotFoundException('User not found');
 
     let leadName = 'there';
+    let customerName: string | null = null;
     let mobileNumber: string | null = null;
+    let campaignName: string | null = null;
     if (leadId) {
       const lead = await this.prisma.lead.findFirst({
         where: { id: leadId, companyId, assignedToId: userId },
-        select: { customerName: true, mobileNumber: true },
+        select: {
+          customerName: true,
+          mobileNumber: true,
+          campaign: { select: { name: true } },
+        },
       });
       if (lead) {
+        customerName = lead.customerName;
         leadName = lead.customerName?.split(' ')[0] || 'there';
         mobileNumber = lead.mobileNumber;
+        campaignName = lead.campaign?.name || null;
       }
     }
 
     const shareLink = user.shareLink?.trim() || null;
-    const defaultMessage = shareLink
-      ? `Hi ${leadName}, thanks for your interest! Here is your link: ${shareLink}`
-      : `Hi ${leadName}, thanks for your interest! Our team will share the details shortly.`;
+    const { templates, preferredTemplateId } =
+      await this.communication.getShareTemplates({
+        companyId,
+        shareLink,
+        customerName: customerName || leadName,
+        campaignName,
+      });
+
+    const preferred =
+      templates.find((t) => t.id === preferredTemplateId) || templates[0];
+    const defaultMessage =
+      preferred?.content ||
+      (shareLink
+        ? `Hi ${leadName}, thanks for your interest! Here is your link: ${shareLink}`
+        : `Hi ${leadName}, thanks for your interest! Our team will share the details shortly.`);
 
     return {
       shareLink,
       defaultMessage,
       mobileNumber,
       configured: Boolean(shareLink),
+      preferredTemplateId: preferred?.id || null,
+      templates,
     };
   }
 
   async logShare(
     userId: string,
     companyId: string,
-    body: { leadId: string; type: 'WHATSAPP' | 'SMS'; content: string },
+    body: {
+      leadId: string;
+      type: 'WHATSAPP' | 'SMS';
+      content: string;
+      templateId?: string;
+    },
   ) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: body.leadId, companyId, assignedToId: userId },
       select: { id: true },
     });
     if (!lead) throw new NotFoundException('Lead not found');
+
+    let templateId: string | null = body.templateId?.trim() || null;
+    if (templateId) {
+      const template = await this.prisma.messageTemplate.findFirst({
+        where: { id: templateId, companyId },
+        select: { id: true },
+      });
+      if (!template) templateId = null;
+    }
 
     const log = await this.prisma.communicationLog.create({
       data: {
@@ -430,6 +468,7 @@ export class MobileService {
         companyId,
         type: body.type,
         content: body.content,
+        templateId,
         status: 'SENT',
         sentAt: new Date(),
       },

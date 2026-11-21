@@ -9,6 +9,7 @@ import { FollowUpsModule } from '../followups/followups.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { UsersModule } from '../users/users.module';
 import { DevicesModule } from '../devices/devices.module';
+import { CommunicationModule } from '../communication/communication.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { DevicesModule } from '../devices/devices.module';
     NotificationsModule,
     UsersModule,
     DevicesModule,
+    CommunicationModule,
   ],
   controllers: [MobileController],
   providers: [MobileService],

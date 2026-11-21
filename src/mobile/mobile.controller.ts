@@ -291,7 +291,10 @@ export class MobileController {
   @UseGuards(JwtAuthGuard, TelecallerGuard, PermissionsGuard)
   @RequirePermissions(PERMISSION.CALL_ASSIGNED_LEADS)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get telecaller UTM/share link + default WhatsApp message' })
+  @ApiOperation({
+    summary:
+      'Get telecaller UTM/share link + rendered message templates for WhatsApp/SMS',
+  })
   shareLink(@CurrentUser() user: any, @Query('leadId') leadId?: string) {
     return this.mobile.getShareLink(user.userId, user.companyId, leadId);
   }
@@ -303,7 +306,13 @@ export class MobileController {
   @ApiOperation({ summary: 'Log WhatsApp/SMS share opened from Android' })
   shareLog(
     @CurrentUser() user: any,
-    @Body() body: { leadId: string; type: 'WHATSAPP' | 'SMS'; content: string },
+    @Body()
+    body: {
+      leadId: string;
+      type: 'WHATSAPP' | 'SMS';
+      content: string;
+      templateId?: string;
+    },
   ) {
     return this.mobile.logShare(user.userId, user.companyId, body);
   }

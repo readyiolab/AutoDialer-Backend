@@ -23,7 +23,12 @@ export class CreateTemplateDto {
   @IsString()
   language?: string;
 
-  @ApiProperty({ example: 'Dear {customerName}, Thank you for your interest in our loan facility...' })
+  @ApiProperty({
+    example:
+      'Hello! Welcome to Lmendigo.\n\nApply Now: {link}\n\nOur team will verify your application...',
+    description:
+      'Use {link} or {utm} for the telecaller UTM URL, and {customerName} for the lead name.',
+  })
   @IsString()
   @IsNotEmpty()
   content: string;

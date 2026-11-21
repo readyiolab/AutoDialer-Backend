@@ -274,8 +274,54 @@ async function main() {
     });
   }
 
-  // 8. Create Message Templates
+  // 8. Create Message Templates (branded UTM share copy + legacy samples)
+  const lmendigoShare = [
+    'Hello! Welcome to Lmendigo.',
+    '',
+    'To apply for a short-term loan, please complete your fresh application using the link below and keep these documents ready:',
+    '',
+    '1. PAN Card',
+    '2. Aadhaar Card',
+    '3. Latest 6 Months Bank Statement',
+    '4. Last 2 Months Salary Slips',
+    '',
+    'Apply Now: {link}',
+    '',
+    'Our team will verify your application and guide you through the next steps.',
+  ].join('\n');
+
+  const instantRupiyaShare = [
+    'Hello! Welcome to InstantRupiya.',
+    '',
+    'To apply for a short-term loan, please complete your fresh application using the link below and keep these documents ready:',
+    '',
+    '1. PAN Card',
+    '2. Aadhaar Card',
+    '3. Latest 6 Months Bank Statement',
+    '4. Last 2 Months Salary Slips',
+    '',
+    'Apply Now: {link}',
+    '',
+    'Our team will verify your application and guide you through the next steps.',
+  ].join('\n');
+
   const templates = [
+    {
+      name: 'Lmendigo',
+      type: MessageType.WHATSAPP,
+      category: 'Lmendigo',
+      content: lmendigoShare,
+      variables: ['customerName', 'link'],
+      isApproved: true,
+    },
+    {
+      name: 'InstantRupiya',
+      type: MessageType.WHATSAPP,
+      category: 'InstantRupiya',
+      content: instantRupiyaShare,
+      variables: ['customerName', 'link'],
+      isApproved: true,
+    },
     {
       name: 'LOAN_APPLICATION_01',
       type: MessageType.WHATSAPP,
@@ -313,7 +359,13 @@ async function main() {
   for (const t of templates) {
     await prisma.messageTemplate.upsert({
       where: { name_companyId: { name: t.name, companyId: company.id } },
-      update: {},
+      update: {
+        content: t.content,
+        category: t.category,
+        type: t.type,
+        variables: t.variables,
+        isApproved: t.isApproved,
+      },
       create: { ...t, companyId: company.id },
     });
   }
