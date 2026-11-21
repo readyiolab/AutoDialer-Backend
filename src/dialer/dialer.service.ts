@@ -57,41 +57,59 @@ export class DialerService {
       orderBy: { roundNumber: 'desc' },
       select: { id: true },
     });
-    const started = await this.prisma.$transaction(async (tx) => {
-      // Serialize session creation for this campaign assignment so concurrent starts reattach
-      // to one durable session instead of creating multiple queues.
-      const assignmentLock: Array<{ id: string }> = await tx.$queryRaw`
-        SELECT id FROM campaign_assignments
-        WHERE campaignId = ${campaignId} AND userId = ${userId}
-        FOR UPDATE
-      `;
-      if (!assignmentLock.length) throw new ForbiddenException('You are not assigned to this campaign');
-
-      if (!forceNew) {
-        const existing = await tx.dialSession.findFirst({
-          where: { userId, companyId, campaignId, status: { in: ['RUNNING', 'PAUSED'] } },
-          orderBy: { updatedAt: 'desc' },
+    // Use Prisma queries only (no raw FOR UPDATE / SKIP LOCKED) so start does not 500 on MySQL variants.
+    let started: { session: any; reattached: boolean };
+    try {
+      started = await this.prisma.$transaction(async (tx) => {
+        const assignment = await tx.campaignAssignment.findFirst({
+          where: { campaignId, userId },
+          select: { id: true },
         });
-        if (existing) return { session: existing, reattached: true };
-      }
+        if (!assignment) {
+          throw new ForbiddenException('You are not assigned to this campaign');
+        }
 
-      await tx.dialSession.updateMany({
-        where: { userId, companyId, campaignId, status: { in: ['RUNNING', 'PAUSED'] } },
-        data: { status: 'ENDED', endedAt: new Date(), currentLeadId: null },
+        if (!forceNew) {
+          const existing = await tx.dialSession.findFirst({
+            where: { userId, companyId, campaignId, status: { in: ['RUNNING', 'PAUSED'] } },
+            orderBy: { updatedAt: 'desc' },
+          });
+          if (existing) return { session: existing, reattached: true };
+        }
+
+        await tx.dialSession.updateMany({
+          where: { userId, companyId, campaignId, status: { in: ['RUNNING', 'PAUSED'] } },
+          data: { status: 'ENDED', endedAt: new Date(), currentLeadId: null },
+        });
+        const session = await tx.dialSession.create({
+          data: {
+            userId,
+            companyId,
+            campaignId,
+            roundId: activeRound?.id || null,
+            mode,
+            status: 'RUNNING',
+            completedCount: 0,
+          },
+        });
+        return { session, reattached: false };
       });
-      const session = await tx.dialSession.create({
-        data: {
-          userId,
-          companyId,
-          campaignId,
-          roundId: activeRound?.id || null,
-          mode,
-          status: 'RUNNING',
-          completedCount: 0,
-        },
-      });
-      return { session, reattached: false };
-    });
+    } catch (err: any) {
+      if (
+        err instanceof ForbiddenException ||
+        err instanceof BadRequestException ||
+        err instanceof ConflictException
+      ) {
+        throw err;
+      }
+      const msg = String(err?.message || err);
+      if (/roundId|Unknown column|P2022|does not exist/i.test(msg)) {
+        throw new BadRequestException(
+          'Dialer DB is missing round columns. On the server run: npx prisma migrate deploy',
+        );
+      }
+      throw err;
+    }
 
     if (started.reattached) {
       return this.buildSessionPayload(started.session, userId, companyId);
@@ -1085,14 +1103,16 @@ export class DialerService {
 
     if (selected) {
       const claimed = await this.prisma.$transaction(async (tx) => {
-        const locked: Array<{ id: string }> = await tx.$queryRaw`
-          SELECT id FROM leads
-          WHERE id = ${selected.id}
-            AND companyId = ${companyId}
-            AND assignedToId = ${userId}
-          FOR UPDATE SKIP LOCKED
-        `;
-        if (!locked.length) return null;
+        const stillMine = await tx.lead.findFirst({
+          where: {
+            id: selected.id,
+            companyId,
+            assignedToId: userId,
+            isBlacklisted: false,
+          },
+          select: { id: true },
+        });
+        if (!stillMine) return null;
         if (sessionId) {
           await tx.dialSession.update({
             where: { id: sessionId },
