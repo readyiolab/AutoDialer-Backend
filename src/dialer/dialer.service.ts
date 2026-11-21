@@ -26,67 +26,12 @@ const DIALABLE_STATUSES: LeadStatus[] = [
 
 @Injectable()
 export class DialerService {
-  private dialerSchemaReady: Promise<void> | null = null;
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly callsService: CallsService,
     private readonly realtime: RealtimeGateway,
     private readonly audit: AuditService,
   ) {}
-
-  /**
-   * Self-heal production DBs that pulled dialer code before migrate deploy.
-   * Adds nullable columns used by Prisma DialSession / DialSessionEvent.
-   */
-  private async ensureDialerSchema() {
-    if (!this.dialerSchemaReady) {
-      this.dialerSchemaReady = (async () => {
-        const addColumn = async (sql: string) => {
-          try {
-            await this.prisma.$executeRawUnsafe(sql);
-          } catch (err: any) {
-            const msg = String(err?.message || err);
-            // Duplicate column / already exists — safe to ignore
-            if (!/Duplicate column|1060|already exists/i.test(msg)) {
-              // Table missing is handled by callers; don't block forever
-              if (!/doesn't exist|1146|ER_NO_SUCH_TABLE/i.test(msg)) {
-                // eslint-disable-next-line no-console
-                console.warn('[dialer] ensureDialerSchema:', msg);
-              }
-            }
-          }
-        };
-        await addColumn(
-          'ALTER TABLE `dial_sessions` ADD COLUMN `roundId` VARCHAR(191) NULL',
-        );
-        await addColumn(
-          'ALTER TABLE `dial_sessions` ADD COLUMN `resumedAt` DATETIME(3) NULL',
-        );
-        await addColumn(
-          'ALTER TABLE `dial_session_events` ADD COLUMN `leadId` VARCHAR(191) NULL',
-        );
-        try {
-          await this.prisma.$executeRawUnsafe(
-            'CREATE INDEX `dial_sessions_roundId_idx` ON `dial_sessions`(`roundId`)',
-          );
-        } catch {
-          /* index may already exist */
-        }
-        try {
-          await this.prisma.$executeRawUnsafe(
-            'CREATE INDEX `dial_session_events_sessionId_eventType_leadId_idx` ON `dial_session_events`(`sessionId`, `eventType`, `leadId`)',
-          );
-        } catch {
-          /* index may already exist */
-        }
-      })().catch((err) => {
-        this.dialerSchemaReady = null;
-        throw err;
-      });
-    }
-    await this.dialerSchemaReady;
-  }
 
   async startSession(
     userId: string,
@@ -105,7 +50,6 @@ export class DialerService {
       throw new BadRequestException('campaignId is required to start a dialer session');
     }
     await this.assertCampaignAssignment(userId, companyId, campaignId);
-    await this.ensureDialerSchema();
 
     const forceNew = !!opts.forceNew;
     let activeRound: { id: string } | null = null;
@@ -182,7 +126,6 @@ export class DialerService {
   }
 
   async getActiveSession(userId: string, companyId: string, campaignId?: string) {
-    await this.ensureDialerSchema();
     const where: any = {
       userId,
       companyId,
@@ -422,7 +365,6 @@ export class DialerService {
       idempotencyKey?: string;
     },
   ) {
-    await this.ensureDialerSchema();
     if (!event.idempotencyKey?.trim()) {
       throw new BadRequestException('idempotencyKey is required for dialer events');
     }
@@ -768,7 +710,6 @@ export class DialerService {
   }
 
   async getNext(sessionId: string, userId: string, companyId: string) {
-    await this.ensureDialerSchema();
     const session = await this.getOwnedSession(sessionId, userId, companyId);
     if (session.status === 'ENDED') {
       throw new BadRequestException('Session has ended');
