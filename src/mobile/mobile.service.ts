@@ -384,7 +384,11 @@ export class MobileService {
   async getShareLink(userId: string, companyId: string, leadId?: string) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, companyId },
-      select: { shareLink: true, name: true },
+      select: {
+        shareLink: true,
+        name: true,
+        shareTemplates: { select: { templateId: true } },
+      },
     });
     if (!user) throw new NotFoundException('User not found');
 
@@ -410,6 +414,7 @@ export class MobileService {
     }
 
     const shareLink = user.shareLink?.trim() || null;
+    const assignedIds = (user.shareTemplates || []).map((r) => r.templateId);
     const { templates, preferredTemplateId } =
       await this.communication.getShareTemplates({
         companyId,
@@ -417,6 +422,8 @@ export class MobileService {
         customerName: customerName || leadName,
         campaignName,
         type: MessageType.WHATSAPP,
+        // Assigned only when admin set them; otherwise all approved (backward compatible)
+        templateIds: assignedIds.length ? assignedIds : null,
       });
 
     const preferred =

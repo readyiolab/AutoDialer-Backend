@@ -387,6 +387,7 @@ model User {
   refreshTokens        RefreshToken[]
   createdRounds        CampaignRound[]         @relation("RoundCreatedBy")
   roundLeadAssignments CampaignRoundLead[]     @relation("RoundLeadAssignee")
+  shareTemplates       UserMessageTemplate[]
 
   @@unique([employeeId, companyId])
   @@index([companyId, status])
@@ -853,11 +854,27 @@ model MessageTemplate {
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
 
-  company           Company            @relation(fields: [companyId], references: [id])
+  company           Company               @relation(fields: [companyId], references: [id])
   communicationLogs CommunicationLog[]
+  userAssignments   UserMessageTemplate[]
 
   @@unique([name, companyId])
   @@map("message_templates")
+}
+
+model UserMessageTemplate {
+  id         String   @id @default(uuid())
+  userId     String
+  templateId String
+  createdAt  DateTime @default(now())
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  template MessageTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, templateId])
+  @@index([userId])
+  @@index([templateId])
+  @@map("user_message_templates")
 }
 
 model CommunicationLog {

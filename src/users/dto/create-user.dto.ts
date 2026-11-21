@@ -9,6 +9,7 @@ import {
   IsUUID,
   Matches,
   IsBoolean,
+  IsArray,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -79,6 +80,15 @@ export class CreateUserDto {
   @IsOptional()
   @IsString()
   shareLink?: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Message template IDs this telecaller can share on Interested',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  shareTemplateIds?: string[];
 
   @ApiPropertyOptional({ example: 'ABCDE1234F', description: 'Required for TELECALLER' })
   @IsOptional()

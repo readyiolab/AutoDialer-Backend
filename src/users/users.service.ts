@@ -5,8 +5,9 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { invalidateAllSessionAuthCache } from '../auth/session-cache';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
@@ -112,13 +113,14 @@ export class UsersService {
           department: { select: { id: true, name: true } },
           reportingManager: { select: { id: true, name: true, employeeId: true } },
           team: { select: { id: true, name: true } },
+          shareTemplates: { select: { templateId: true } },
         },
       }),
       this.prisma.user.count({ where }),
     ]);
 
     return {
-      data: users,
+      data: users.map((u) => this.mapUserShareTemplates(u)),
       meta: {
         total,
         page,
@@ -142,6 +144,7 @@ export class UsersService {
           select: { id: true, name: true, employeeId: true, phone: true },
           where: { status: 'ACTIVE' },
         },
+        shareTemplates: { select: { templateId: true } },
       },
     });
 
@@ -150,7 +153,7 @@ export class UsersService {
     }
 
     const { password, ...result } = user;
-    return result;
+    return this.mapUserShareTemplates(result);
   }
 
   private async assertTelecallerKyc(
@@ -170,6 +173,49 @@ export class UsersService {
     if (!aadhaarNumber) {
       throw new BadRequestException('Aadhaar number is required for Telecaller');
     }
+  }
+
+  /** Replace telecaller ↔ template assignments (company-scoped). */
+  private async syncShareTemplates(
+    userId: string,
+    companyId: string,
+    shareTemplateIds?: string[] | null,
+  ) {
+    if (shareTemplateIds === undefined) return;
+
+    const uniqueIds = [...new Set((shareTemplateIds || []).filter(Boolean))];
+    if (uniqueIds.length) {
+      const valid = await this.prisma.messageTemplate.findMany({
+        where: { companyId, id: { in: uniqueIds } },
+        select: { id: true },
+      });
+      if (valid.length !== uniqueIds.length) {
+        throw new BadRequestException('One or more message templates were not found');
+      }
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.userMessageTemplate.deleteMany({ where: { userId } }),
+      ...(uniqueIds.length
+        ? [
+            this.prisma.userMessageTemplate.createMany({
+              data: uniqueIds.map((templateId) => ({
+                id: randomUUID(),
+                userId,
+                templateId,
+              })),
+            }),
+          ]
+        : []),
+    ]);
+  }
+
+  private mapUserShareTemplates<T extends { shareTemplates?: { templateId: string }[] }>(
+    user: T,
+  ) {
+    const shareTemplateIds = (user.shareTemplates || []).map((r) => r.templateId);
+    const { shareTemplates: _st, ...rest } = user as T & { shareTemplates?: unknown };
+    return { ...rest, shareTemplateIds };
   }
 
   async create(createUserDto: CreateUserDto, companyId: string, performedById?: string) {
@@ -203,7 +249,12 @@ export class UsersService {
     const rawPassword = createUserDto.password || randomBytes(32).toString('hex');
     const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
-    const { password: _p, sendInvitation: _s, ...rest } = createUserDto as any;
+    const {
+      password: _p,
+      sendInvitation: _s,
+      shareTemplateIds,
+      ...rest
+    } = createUserDto as any;
 
     const user = await this.prisma.user.create({
       data: {
@@ -223,6 +274,8 @@ export class UsersService {
         company: { select: { id: true, name: true } },
       },
     });
+
+    await this.syncShareTemplates(user.id, companyId, shareTemplateIds);
 
     let invitationSent = false;
     if (sendInvitation && user.email) {
@@ -263,7 +316,11 @@ export class UsersService {
     }
 
     const { password, company, ...result } = user as any;
-    return { ...result, invitationSent };
+    return {
+      ...result,
+      shareTemplateIds: shareTemplateIds || [],
+      invitationSent,
+    };
   }
 
   async resendInvitation(userId: string, companyId: string, performedById: string) {
@@ -338,6 +395,8 @@ export class UsersService {
         where: { userId: id, status: 'ACTIVE' },
         data: { status: 'BLOCKED', revokedAt: now },
       });
+      // Cached JWT snapshots must not outlive an administrative account revocation.
+      invalidateAllSessionAuthCache();
     }
     await this.audit.logAction({
       userId: performedById,
@@ -367,7 +426,11 @@ export class UsersService {
       updateUserDto.aadhaarNumber ?? existing.aadhaarNumber ?? undefined,
     );
 
-    const data: any = { ...updateUserDto };
+    const { shareTemplateIds, ...updateFields } = updateUserDto as UpdateUserDto & {
+      shareTemplateIds?: string[];
+    };
+    const data: any = { ...updateFields };
+    delete data.shareTemplateIds;
 
     if (updateUserDto.password) {
       data.password = await bcrypt.hash(updateUserDto.password, 10);
@@ -389,11 +452,28 @@ export class UsersService {
         role: { select: { id: true, name: true, displayName: true } },
         branch: { select: { id: true, name: true } },
         department: { select: { id: true, name: true } },
+        shareTemplates: { select: { templateId: true } },
       },
     });
 
-    const { password, ...result } = user;
-    return result;
+    if (shareTemplateIds !== undefined) {
+      await this.syncShareTemplates(id, companyId, shareTemplateIds);
+    }
+
+    invalidateAllSessionAuthCache();
+
+    const refreshed = await this.prisma.user.findFirst({
+      where: { id, companyId },
+      include: {
+        role: { select: { id: true, name: true, displayName: true } },
+        branch: { select: { id: true, name: true } },
+        department: { select: { id: true, name: true } },
+        shareTemplates: { select: { templateId: true } },
+      },
+    });
+
+    const { password, ...result } = refreshed || user;
+    return this.mapUserShareTemplates(result as any);
   }
 
   async remove(id: string, companyId: string) {
@@ -409,6 +489,7 @@ export class UsersService {
       where: { id },
       data: { status: 'INACTIVE' },
     });
+    invalidateAllSessionAuthCache();
 
     return { message: 'User deactivated successfully' };
   }
@@ -432,6 +513,7 @@ export class UsersService {
       where: { id },
       data: { password: hashedPassword },
     });
+    invalidateAllSessionAuthCache();
 
     return { message: 'Password reset successfully' };
   }

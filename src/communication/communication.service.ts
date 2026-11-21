@@ -88,11 +88,16 @@ export class CommunicationService {
     customerName?: string | null;
     campaignName?: string | null;
     type?: MessageType;
+    /** When set and non-empty, only these templates (still must be approved). */
+    templateIds?: string[] | null;
   }) {
     await this.ensureBrandShareTemplates(opts.companyId);
 
     const where: any = { companyId: opts.companyId, isApproved: true };
     if (opts.type) where.type = opts.type;
+    if (opts.templateIds?.length) {
+      where.id = { in: opts.templateIds };
+    }
 
     const rows = await this.prisma.messageTemplate.findMany({
       where,
