@@ -103,9 +103,9 @@ export class DialerService {
         throw err;
       }
       const msg = String(err?.message || err);
-      if (/roundId|Unknown column|P2022|does not exist/i.test(msg)) {
+      if (/roundId|resumedAt|Unknown column|P2022|does not exist/i.test(msg)) {
         throw new BadRequestException(
-          'Dialer DB is missing round columns. On the server run: npx prisma migrate deploy',
+          'Server database is outdated for dialer. Admin must run: npx prisma migrate deploy && pm2 restart autodialer-api',
         );
       }
       throw err;
