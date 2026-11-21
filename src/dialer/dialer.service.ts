@@ -1,10 +1,11 @@
 import {
   Injectable,
   BadRequestException,
+  ConflictException,
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { DialMode, LeadStatus } from '@prisma/client';
+import { DialMode, LeadStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CallsService } from '../calls/calls.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
@@ -51,41 +52,51 @@ export class DialerService {
     await this.assertCampaignAssignment(userId, companyId, campaignId);
 
     const forceNew = !!opts.forceNew;
-    if (!forceNew) {
-      const existing = await this.prisma.dialSession.findFirst({
-        where: {
+    const activeRound = await this.prisma.campaignRound.findFirst({
+      where: { campaignId, companyId, status: 'ACTIVE' },
+      orderBy: { roundNumber: 'desc' },
+      select: { id: true },
+    });
+    const started = await this.prisma.$transaction(async (tx) => {
+      // Serialize session creation for this campaign assignment so concurrent starts reattach
+      // to one durable session instead of creating multiple queues.
+      const assignmentLock: Array<{ id: string }> = await tx.$queryRaw`
+        SELECT id FROM campaign_assignments
+        WHERE campaignId = ${campaignId} AND userId = ${userId}
+        FOR UPDATE
+      `;
+      if (!assignmentLock.length) throw new ForbiddenException('You are not assigned to this campaign');
+
+      if (!forceNew) {
+        const existing = await tx.dialSession.findFirst({
+          where: { userId, companyId, campaignId, status: { in: ['RUNNING', 'PAUSED'] } },
+          orderBy: { updatedAt: 'desc' },
+        });
+        if (existing) return { session: existing, reattached: true };
+      }
+
+      await tx.dialSession.updateMany({
+        where: { userId, companyId, campaignId, status: { in: ['RUNNING', 'PAUSED'] } },
+        data: { status: 'ENDED', endedAt: new Date(), currentLeadId: null },
+      });
+      const session = await tx.dialSession.create({
+        data: {
           userId,
           companyId,
           campaignId,
-          status: { in: ['RUNNING', 'PAUSED'] },
+          roundId: activeRound?.id || null,
+          mode,
+          status: 'RUNNING',
+          completedCount: 0,
         },
-        orderBy: { updatedAt: 'desc' },
       });
-      if (existing) {
-        return this.buildSessionPayload(existing, userId, companyId);
-      }
+      return { session, reattached: false };
+    });
+
+    if (started.reattached) {
+      return this.buildSessionPayload(started.session, userId, companyId);
     }
-
-    await this.prisma.dialSession.updateMany({
-      where: {
-        userId,
-        companyId,
-        campaignId,
-        status: { in: ['RUNNING', 'PAUSED'] },
-      },
-      data: { status: 'ENDED', endedAt: new Date(), currentLeadId: null },
-    });
-
-    const session = await this.prisma.dialSession.create({
-      data: {
-        userId,
-        companyId,
-        campaignId,
-        mode,
-        status: 'RUNNING',
-        completedCount: 0,
-      },
-    });
+    const session = started.session;
 
     const next = await this.pickNextLead(userId, companyId, campaignId, session.id);
     this.realtime.emitToCompany(companyId, 'dialer:presence', {
@@ -103,6 +114,7 @@ export class DialerService {
       tel: next.lead ? `tel:${next.lead.mobileNumber}` : null,
       reason: next.lead ? undefined : next.reason,
       reattached: false,
+      roundNumber: await this.getRoundNumber(session.roundId),
     };
   }
 
@@ -211,13 +223,18 @@ export class DialerService {
       throw new BadRequestException('Session cannot be resumed');
     }
 
-    const updated =
-      session.status === 'PAUSED'
-        ? await this.prisma.dialSession.update({
-            where: { id: session.id },
-            data: { status: 'RUNNING', pausedAt: null },
-          })
-        : session;
+    let reattached = session.status === 'RUNNING';
+    if (session.status === 'PAUSED') {
+      const claimed = await this.prisma.dialSession.updateMany({
+        where: { id: session.id, userId, companyId, status: 'PAUSED' },
+        data: { status: 'RUNNING', resumedAt: new Date() },
+      });
+      reattached = claimed.count === 0;
+    }
+    const updated = await this.getOwnedSession(session.id, userId, companyId);
+    if (updated.status === 'ENDED') {
+      throw new BadRequestException('Session has ended — start a new session');
+    }
 
     // Prefer unfinished current lead (open call or still dialable) before picking next
     if (session.currentLeadId) {
@@ -226,6 +243,7 @@ export class DialerService {
           id: session.currentLeadId,
           companyId,
           assignedToId: userId,
+          ...(session.roundId ? { currentRoundId: session.roundId } : {}),
           isBlacklisted: false,
           status: { in: DIALABLE_STATUSES },
         },
@@ -255,6 +273,7 @@ export class DialerService {
           userId,
           companyId,
           session.campaignId || undefined,
+          session.id,
         );
         this.realtime.emitToCompany(companyId, 'dialer:presence', {
           userId,
@@ -265,10 +284,14 @@ export class DialerService {
         return {
           session: updated,
           lead: current,
+          call: openCall,
           pendingCount,
           completedCount: updated.completedCount,
           tel: `tel:${current.mobileNumber}`,
-          awaitingDisposition: !!openCall && (!openCall.endTime || !openCall.disposition),
+          awaitingDisposition: !!openCall?.endTime && !openCall.disposition,
+          callInProgress: !!openCall && !openCall.endTime,
+          reattached,
+          roundNumber: await this.getRoundNumber(session.roundId),
         };
       }
     }
@@ -293,6 +316,9 @@ export class DialerService {
       tel: next.lead ? `tel:${next.lead.mobileNumber}` : null,
       reason: next.lead ? undefined : next.reason,
       awaitingDisposition: false,
+      callInProgress: false,
+      reattached,
+      roundNumber: await this.getRoundNumber(session.roundId),
     };
   }
 
@@ -332,14 +358,10 @@ export class DialerService {
       idempotencyKey?: string;
     },
   ) {
+    if (!event.idempotencyKey?.trim()) {
+      throw new BadRequestException('idempotencyKey is required for dialer events');
+    }
     const session = await this.getOwnedSession(sessionId, userId, companyId);
-    if (session.status === 'ENDED') {
-      throw new BadRequestException('Session has ended');
-    }
-    if (session.status === 'PAUSED' && event.type !== 'ended') {
-      throw new BadRequestException('Session is paused');
-    }
-
     if (event.idempotencyKey) {
       const prior = await this.prisma.dialSessionEvent.findUnique({
         where: {
@@ -349,39 +371,86 @@ export class DialerService {
           },
         },
       });
-      if (prior?.responseJson) {
-        return prior.responseJson as any;
+      if (prior) {
+        if (prior.responseJson) return prior.responseJson as any;
+        throw new ConflictException('This dialer event is still being processed');
       }
     }
 
-    let result: any;
-    if (event.type === 'started') {
-      result = await this.handleStarted(session, userId, companyId, event);
-    } else if (event.type === 'skip') {
-      result = await this.handleSkip(session, userId, companyId, event);
-    } else {
-      result = await this.handleEnded(session, userId, companyId, event);
+    if (session.status === 'ENDED') {
+      throw new BadRequestException('Session has ended');
+    }
+    if (session.status === 'PAUSED' && event.type !== 'ended') {
+      throw new BadRequestException('Session is paused');
     }
 
+    let claimedEvent = false;
     if (event.idempotencyKey) {
-      await this.prisma.dialSessionEvent.upsert({
-        where: {
-          sessionId_idempotencyKey: {
+      try {
+        await this.prisma.dialSessionEvent.create({
+          data: {
             sessionId,
+            leadId: event.leadId || session.currentLeadId,
             idempotencyKey: event.idempotencyKey,
+            eventType: event.type,
           },
-        },
-        create: {
-          sessionId,
-          idempotencyKey: event.idempotencyKey,
-          eventType: event.type,
-          responseJson: result,
-        },
-        update: { responseJson: result },
-      });
+        });
+        claimedEvent = true;
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          const concurrent = await this.prisma.dialSessionEvent.findUnique({
+            where: {
+              sessionId_idempotencyKey: {
+                sessionId,
+                idempotencyKey: event.idempotencyKey,
+              },
+            },
+          });
+          if (concurrent?.responseJson) return concurrent.responseJson as any;
+          throw new ConflictException('This dialer event is still being processed');
+        }
+        throw error;
+      }
     }
 
-    return result;
+    try {
+      let result: any;
+      if (event.type === 'started') {
+        result = await this.handleStarted(session, userId, companyId, event);
+      } else if (event.type === 'skip') {
+        result = await this.handleSkip(session, userId, companyId, event);
+      } else {
+        result = await this.handleEnded(session, userId, companyId, event);
+      }
+
+      if (event.idempotencyKey) {
+        await this.prisma.dialSessionEvent.update({
+          where: {
+            sessionId_idempotencyKey: {
+              sessionId,
+              idempotencyKey: event.idempotencyKey,
+            },
+          },
+          data: { responseJson: result },
+        });
+      }
+      return result;
+    } catch (error) {
+      if (claimedEvent) {
+        await this.prisma.dialSessionEvent.delete({
+          where: {
+            sessionId_idempotencyKey: {
+              sessionId,
+              idempotencyKey: event.idempotencyKey!,
+            },
+          },
+        });
+      }
+      throw error;
+    }
   }
 
   private async handleStarted(
@@ -390,9 +459,32 @@ export class DialerService {
     companyId: string,
     event: { leadId?: string },
   ) {
+    const latestSession = await this.prisma.dialSession.findFirst({
+      where: { id: session.id, userId, companyId },
+      select: { status: true, currentLeadId: true },
+    });
+    if (!latestSession || latestSession.status !== 'RUNNING') {
+      throw new ConflictException('Calling session is paused or ended; resume it before dialing');
+    }
     const leadId = event.leadId || session.currentLeadId;
     if (!leadId) throw new BadRequestException('No lead to dial');
+    if (latestSession.currentLeadId !== leadId) {
+      throw new ConflictException('This lead is no longer current in the dialer session');
+    }
     const lead = await this.assertAssignableLead(leadId, userId, companyId);
+    const existingCall = await this.prisma.callRecord.findFirst({
+      where: {
+        leadId: lead.id,
+        userId,
+        companyId,
+        dialSessionId: session.id,
+        OR: [{ endTime: null }, { disposition: null }],
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existingCall) {
+      return { call: existingCall, lead, tel: `tel:${lead.mobileNumber}` };
+    }
     await this.prisma.dialSession.update({
       where: { id: session.id },
       data: { currentLeadId: lead.id },
@@ -427,12 +519,20 @@ export class DialerService {
     event: { leadId?: string },
   ) {
     const leadId = event.leadId || session.currentLeadId;
-    if (leadId) {
-      await this.prisma.lead.updateMany({
-        where: { id: leadId, companyId, assignedToId: userId },
-        data: { status: 'PENDING' },
-      });
+    if (!leadId) throw new BadRequestException('No lead to skip');
+    if (session.currentLeadId !== leadId) {
+      throw new ConflictException('This lead is no longer current in the dialer session');
     }
+    const activeCall = await this.prisma.callRecord.findFirst({
+      where: { leadId, userId, companyId, dialSessionId: session.id, endTime: null },
+    });
+    if (activeCall) {
+      throw new BadRequestException('Cannot skip a lead with an active call');
+    }
+    await this.prisma.lead.updateMany({
+      where: { id: leadId, companyId, assignedToId: userId },
+      data: { status: 'PENDING' },
+    });
     const next = await this.pickNextLead(
       userId,
       companyId,
@@ -468,9 +568,15 @@ export class DialerService {
   ) {
     const leadId = event.leadId || session.currentLeadId;
     if (!leadId) throw new BadRequestException('No lead on session');
+    if (session.currentLeadId !== leadId) {
+      throw new ConflictException('This lead is no longer current in the dialer session');
+    }
+    if (!event.disposition) {
+      throw new BadRequestException('A call outcome is required before advancing');
+    }
 
     const openCall = await this.prisma.callRecord.findFirst({
-      where: { leadId, userId, companyId, endTime: null },
+      where: { leadId, userId, companyId, dialSessionId: session.id, endTime: null },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -553,7 +659,7 @@ export class DialerService {
     let tel: string | null = null;
     let reason: string | undefined;
     const canAutoAdvance =
-      session.status === 'RUNNING' &&
+      updatedSession.status === 'RUNNING' &&
       (session.mode === 'PROGRESSIVE' || session.mode === 'POWER');
 
     if (canAutoAdvance) {
@@ -573,12 +679,13 @@ export class DialerService {
         userId,
         companyId,
         session.campaignId || undefined,
+        session.id,
       );
     }
 
     this.realtime.emitToCompany(companyId, 'dialer:presence', {
       userId,
-      status: session.status === 'PAUSED' ? 'PAUSED' : nextLead ? 'AVAILABLE' : 'IDLE',
+      status: updatedSession.status === 'PAUSED' ? 'PAUSED' : nextLead ? 'AVAILABLE' : 'IDLE',
       sessionId: session.id,
       leadId: nextLead?.id,
     });
@@ -602,6 +709,33 @@ export class DialerService {
     }
     if (session.status === 'PAUSED') {
       throw new BadRequestException('Session is paused — resume first');
+    }
+    if (session.currentLeadId) {
+      const current = await this.prisma.lead.findFirst({
+        where: {
+          id: session.currentLeadId,
+          companyId,
+          assignedToId: userId,
+          isBlacklisted: false,
+          status: { in: DIALABLE_STATUSES },
+        },
+        include: {
+          campaign: { select: { id: true, name: true, maxAttemptsPerLead: true } },
+        },
+      });
+      if (current) {
+        return {
+          lead: current,
+          pendingCount: await this.countPending(
+            userId,
+            companyId,
+            session.campaignId || undefined,
+            sessionId,
+          ),
+          completedCount: session.completedCount,
+          tel: `tel:${current.mobileNumber}`,
+        };
+      }
     }
     const next = await this.pickNextLead(
       userId,
@@ -657,18 +791,27 @@ export class DialerService {
 
   private async buildSessionPayload(session: any, userId: string, companyId: string) {
     let lead = null as any;
+    let currentCall = null as any;
     let reason: string | undefined;
     let pendingCount = 0;
     let awaitingDisposition = false;
 
     if (session.currentLeadId) {
       lead = await this.prisma.lead.findFirst({
-        where: { id: session.currentLeadId, companyId, assignedToId: userId },
+        where: {
+          id: session.currentLeadId,
+          companyId,
+          assignedToId: userId,
+          isBlacklisted: false,
+          status: { in: DIALABLE_STATUSES },
+          ...(session.campaignId ? { campaignId: session.campaignId } : {}),
+          ...(session.roundId ? { currentRoundId: session.roundId } : {}),
+        },
         include: {
           campaign: { select: { id: true, name: true, maxAttemptsPerLead: true } },
         },
       });
-      const openCall = lead
+      currentCall = lead
         ? await this.prisma.callRecord.findFirst({
             where: {
               leadId: lead.id,
@@ -680,11 +823,12 @@ export class DialerService {
             orderBy: { createdAt: 'desc' },
           })
         : null;
-      awaitingDisposition = !!(openCall && (!openCall.endTime || !openCall.disposition));
+      awaitingDisposition = !!(currentCall?.endTime && !currentCall.disposition);
       pendingCount = await this.countPending(
         userId,
         companyId,
         session.campaignId || undefined,
+        session.id,
       );
     }
 
@@ -703,6 +847,7 @@ export class DialerService {
         userId,
         companyId,
         session.campaignId || undefined,
+        session.id,
       );
       reason = pendingCount === 0 ? 'empty_queue' : undefined;
     }
@@ -712,6 +857,9 @@ export class DialerService {
       lead,
       pendingCount,
       completedCount: session.completedCount || 0,
+      call: currentCall || undefined,
+      callInProgress: !!currentCall && !currentCall.endTime,
+      roundNumber: await this.getRoundNumber(session.roundId),
       tel: lead ? `tel:${lead.mobileNumber}` : null,
       reason,
       reattached: true,
@@ -719,7 +867,12 @@ export class DialerService {
     };
   }
 
-  private async countPending(userId: string, companyId: string, campaignId?: string | null) {
+  private async countPending(
+    userId: string,
+    companyId: string,
+    campaignId?: string | null,
+    sessionId?: string,
+  ) {
     const where: any = {
       assignedToId: userId,
       companyId,
@@ -727,7 +880,40 @@ export class DialerService {
       status: { in: DIALABLE_STATUSES },
     };
     if (campaignId) where.campaignId = campaignId;
+    if (sessionId) {
+      const [session, processedEvents, completedCalls] = await Promise.all([
+        this.prisma.dialSession.findFirst({
+          where: { id: sessionId, userId, companyId },
+          select: { roundId: true },
+        }),
+        this.prisma.dialSessionEvent.findMany({
+          where: { sessionId, eventType: { in: ['ended', 'skip'] }, leadId: { not: null } },
+          select: { leadId: true },
+        }),
+        this.prisma.callRecord.findMany({
+          where: { dialSessionId: sessionId, disposition: { not: null } },
+          select: { leadId: true },
+          distinct: ['leadId'],
+        }),
+      ]);
+      if (session?.roundId) where.currentRoundId = session.roundId;
+      const excluded = [...new Set(
+        [...processedEvents, ...completedCalls]
+          .map((row) => row.leadId)
+          .filter((id): id is string => !!id),
+      )];
+      if (excluded.length) where.id = { notIn: excluded };
+    }
     return this.prisma.lead.count({ where });
+  }
+
+  private async getRoundNumber(roundId?: string | null): Promise<number | null> {
+    if (!roundId) return null;
+    const round = await this.prisma.campaignRound.findUnique({
+      where: { id: roundId },
+      select: { roundNumber: true },
+    });
+    return round?.roundNumber ?? null;
   }
 
   private async getOwnedSession(sessionId: string, userId: string, companyId: string) {
@@ -761,20 +947,23 @@ export class DialerService {
   ) {
     // Prefer session.campaignId so leads never cross campaign boundaries
     let effectiveCampaignId = campaignId || null;
+    let sessionRoundId: string | null = null;
     if (sessionId) {
       const session = await this.prisma.dialSession.findFirst({
         where: { id: sessionId, userId, companyId },
-        select: { campaignId: true },
+        select: { campaignId: true, roundId: true },
       });
       if (session?.campaignId) {
         effectiveCampaignId = session.campaignId;
       }
+      sessionRoundId = session?.roundId || null;
     }
 
     const rules = await this.prisma.callingRule.findFirst({
       where: { companyId, isActive: true },
     });
 
+    const now = new Date();
     const timeStr = this.nowTimeHm();
 
     let campaign = null as any;
@@ -807,7 +996,12 @@ export class DialerService {
       }
     }
 
-    const activeRound = effectiveCampaignId
+    const activeRound = sessionRoundId
+      ? await this.prisma.campaignRound.findFirst({
+          where: { id: sessionRoundId, campaignId: effectiveCampaignId, companyId },
+          select: { id: true },
+        })
+      : effectiveCampaignId
       ? await this.prisma.campaignRound.findFirst({
           where: {
             campaignId: effectiveCampaignId,
@@ -827,7 +1021,32 @@ export class DialerService {
     };
     if (effectiveCampaignId) where.campaignId = effectiveCampaignId;
     if (activeRound) where.currentRoundId = activeRound.id;
-    if (excludeLeadId) where.id = { not: excludeLeadId };
+    if (sessionId) {
+      const [processedEvents, completedCalls] = await Promise.all([
+        this.prisma.dialSessionEvent.findMany({
+          where: {
+            sessionId,
+            eventType: { in: ['ended', 'skip'] },
+            leadId: { not: null },
+          },
+          select: { leadId: true },
+        }),
+        this.prisma.callRecord.findMany({
+          where: { dialSessionId: sessionId, disposition: { not: null } },
+          select: { leadId: true },
+          distinct: ['leadId'],
+        }),
+      ]);
+      const excludedIds = new Set<string>(
+        [...processedEvents, ...completedCalls]
+          .map((item) => item.leadId)
+          .filter((id): id is string => !!id),
+      );
+      if (excludeLeadId) excludedIds.add(excludeLeadId);
+      if (excludedIds.size > 0) where.id = { notIn: [...excludedIds] };
+    } else if (excludeLeadId) {
+      where.id = { not: excludeLeadId };
+    }
 
     // Prefer leads under round attempt cap when round membership exists
     const candidates = await this.prisma.lead.findMany({

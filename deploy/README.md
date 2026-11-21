@@ -159,6 +159,20 @@ sudo rsync -a --delete dist/ /var/www/autodialer/
 
 Then open Add Employee — roles should list Telecaller (not only Super Admin), and selecting Telecaller shows required PAN/Aadhaar.
 
+## Update: calling hours use India time (API)
+
+EC2 is UTC; dialer windows are India business hours. After Backend pull:
+
+```bash
+cd /var/www/AutoDialer
+git pull
+npm ci
+npm run build
+pm2 restart autodialer-api
+```
+
+Optional `.env`: `CALLING_TIMEZONE=Asia/Kolkata` (default if unset).
+
 ## Update: Android device self-authorize (API + APK 2.2.5)
 
 ```bash
