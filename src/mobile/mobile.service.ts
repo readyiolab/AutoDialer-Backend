@@ -15,7 +15,7 @@ import { UsersService } from '../users/users.service';
 import { DevicesService, DeviceMeta } from '../devices/devices.service';
 import { CommunicationService } from '../communication/communication.service';
 import { LoginDto } from '../auth/dto/login.dto';
-import { DialMode } from '@prisma/client';
+import { DialMode, MessageType } from '@prisma/client';
 import { clampPage, clampPageSize } from '../common/utils/pagination';
 
 @Injectable()
@@ -416,7 +416,7 @@ export class MobileService {
         shareLink,
         customerName: customerName || leadName,
         campaignName,
-        type: 'WHATSAPP' as any,
+        type: MessageType.WHATSAPP,
       });
 
     const preferred =
